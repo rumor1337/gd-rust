@@ -1,0 +1,7 @@
+{
+  "name": "gdrust-gift-bridge",
+  "private": true,
+  "dependencies": {
+    "tiktok-live-connector": "^2.3.0"
+  }
+}
