@@ -72,6 +72,12 @@ fn ka_start_pos(ka: &[(String, String)]) -> u16 {
     find_key(&json).map(|x| x as u16).unwrap_or(0)
 }
 
+impl Default for Level {
+    fn default() -> Self {
+        Level { header: LevelHeader::default(), objects: Vec::new() }
+    }
+}
+
 /// Parse a decompressed level string (plain text, as stored in levels/*.gmd).
 pub fn parse_level(s: &str) -> Level {
     let (header, rest) = match s.split_once(';') {
