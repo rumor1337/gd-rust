@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "target_sha256": "524265b3781596fcc7c9e4d60dc5ac2d0a4cd9530ee3ea637e123f9ac1f9b6a8",
+  "provider": {
+    "id": "ghidra",
+    "name": "Ghidra",
+    "version": "12.1.4"
+  },
+  "analysis_profile_digest": "1894bf6845e04e761d2362126ba24f9db4c4a1c4e9fe4a3bde506a90bf5eac94",
+  "layout": "address",
+  "layout_status": "address",
+  "limitations": [],
+  "functions": []
+}
