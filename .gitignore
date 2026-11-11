@@ -3,3 +3,5 @@ node_modules/
 bridge/node_modules
 /tmp_*.png
 *.snapshot
+audio/
+levels/
