@@ -75,7 +75,13 @@ pub fn parse_object(s: &str) -> GdObject {
             21 => o.base_color = v.parse::<u8>().ok(),
             22 => o.detail_color = v.parse::<u8>().ok(),
             24 => o.z_layer = v.parse::<u8>().ok(),
-            25 => {
+            25 => { /* zOrder, not groups (key 57 is the real group key) */ }
+            33 => {
+                if let Ok(g) = v.parse::<u16>() {
+                    o.groups = vec![g];
+                }
+            }
+            57 => {
                 o.groups = v
                     .split('.')
                     .filter_map(|g| g.parse::<u16>().ok())
@@ -126,7 +132,9 @@ mod tests {
 
     #[test]
     fn dot_separated_groups() {
-        let o = parse_object("1,1,25,3.4.5");
+        let o = parse_object("1,1,57,3.4.5");
         assert_eq!(o.groups, vec![3, 4, 5]);
+        let o2 = parse_object("1,1,33,7");
+        assert_eq!(o2.groups, vec![7]);
     }
 }

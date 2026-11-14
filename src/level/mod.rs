@@ -2,7 +2,7 @@
 
 pub mod object;
 
-use object::GdObject;
+pub use object::GdObject;
 
 #[derive(Debug, Clone)]
 pub struct ColorChannel {
@@ -15,10 +15,16 @@ pub struct ColorChannel {
 
 #[derive(Debug, Clone, Default)]
 pub struct LevelHeader {
-    /// kA2 raw value (speed index; mapping pinned by physics task)
+    /// kA4 value (speed key 0..4, direct index into SPEEDS: 0=0.5x,1=1x,2=2x,3=3x,4=4x)
     pub start_speed: u8,
-    /// kA3 raw value (start gamemode)
+    /// kA2 value (gamemode enum: 0 cube,1 ship,2 ball,3 ufo,4 wave,5 robot,6 spider,7 swing)
     pub start_gamemode: u8,
+    /// kA3 value (mini mode at start)
+    pub start_mini: bool,
+    /// kA11 value (flipped gravity at start)
+    pub start_flip: bool,
+    /// kA10 value (2-player mode from start)
+    pub start_two_player: bool,
     /// from base64 kA14 JSON `start-pos-index`, if present
     pub start_pos_index: u16,
     pub channels: Vec<ColorChannel>,
@@ -133,8 +139,11 @@ pub fn parse_level(s: &str) -> Level {
             .unwrap_or(0)
     };
     let header = LevelHeader {
-        start_speed: get_ka("kA2"),
-        start_gamemode: get_ka("kA3"),
+        start_speed: get_ka("kA4"),
+        start_gamemode: get_ka("kA2"),
+        start_mini: get_ka("kA3") == 1,
+        start_flip: get_ka("kA11") == 1,
+        start_two_player: get_ka("kA10") == 1,
         start_pos_index: ka_start_pos(&ka_raw),
         channels,
         ka: ka_raw,

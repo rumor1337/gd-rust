@@ -9,8 +9,12 @@ pub const JUMP_VEL: f64 = 11.180032;
 pub const X_VEL: f64 = 5.770002;
 pub const TERMINAL_VEL: f64 = 15.0;
 
-/// speed-portal multipliers (m_playerSpeed), index 0..4 = 0.5x, 1x, 2x, 3x, 4x
-pub const SPEEDS: [f64; 5] = [0.7, 0.9, 1.1, 1.3, 1.6];
+/// absolute horizontal speeds in units/s, index 0..4 = 0.5x, 1x, 2x, 3x, 4x
+/// (gddocs enumerations "Actual Speed" column; matches community 8.37/10.386/12.914/15.6/19.2 blocks/s ×30)
+pub const SPEEDS: [f64; 5] = [251.16, 311.58, 387.42, 468.0, 576.0];
+
+/// substeps per second (240Hz)
+pub const TICK_HZ: f64 = 240.0;
 
 /// dt multiplier OpenGD applies to vertical integration (the famous 0.9 quirk).
 /// Calibration knob: real GD may use 1.0. GRIEF replay decides.
@@ -72,10 +76,14 @@ pub const PAD_FORCE_RED: f64 = 1.4; // community: red pad > yellow; calibrate
 pub const PAD_BALL_SPIDER_MULT: f64 = 0.6;
 
 // --- world ---
-/// ground surface world y (editor y=0 + 90 world offset)
+/// ground surface world y; editor y=0 maps to world y=105 (ground-row cell
+/// center), so objects get wy = editor_y + 105 while the floor stays at 90
 pub const GROUND_Y: f64 = 90.0;
 /// ceiling for flying modes
-pub const CEIL_Y: f64 = 390.0;
+// GRIEF builds gameplay up to world y ~1250 (dual tower level): the real
+// GD band (layer gap / zoom) is far taller than 300. 2000 keeps the clamp
+// inert; the 0-death macro oracle will show if a lower line is ever needed.
+pub const CEIL_Y: f64 = 2000.0;
 /// player spawn (PlayLayer::setPosition({-20, 105})) — x,y center
-pub const SPAWN_X: f64 = -20.0;
+pub const SPAWN_X: f64 = 0.0;
 pub const SPAWN_Y: f64 = 105.0;

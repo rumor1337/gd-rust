@@ -32,6 +32,14 @@ pub struct Player {
     pub queued_hold: bool,
     /// frames since robot jump start (robot sustained jump)
     pub robot_frames: f64,
+    /// riding a slope this tick (GD m_isOnSlope; cleared each pass)
+    pub slope_on: bool,
+    /// GD m_isCurrentSlopeTop: slopeFloorTop of the last ridden slope
+    pub slope_top: Option<bool>,
+    /// GD m_collidingWithSlopeId: unique index of the last ridden slope
+    pub slope_id: Option<usize>,
+    /// player radius on the last ridden slope (rad)
+    pub slope_rad: f64,
 }
 
 impl Player {
@@ -48,6 +56,10 @@ impl Player {
             hold: false,
             queued_hold: false,
             robot_frames: 99.0,
+            slope_on: false,
+            slope_top: None,
+            slope_id: None,
+            slope_rad: 0.0,
         }
     }
 
@@ -59,7 +71,15 @@ impl Player {
     }
 
     pub fn outer_half(&self) -> f64 {
-        if self.mini { OUTER_HALF_MINI } else { OUTER_HALF }
+        // wave box is 10×10 (OSGD toggleDartMode), mini-scaled 0.6 → 6
+        if self.mode == GameMode::Wave {
+            if self.mini { 3.0 } else { 5.0 }
+        } else if self.mini { OUTER_HALF_MINI } else { OUTER_HALF }
+    }
+
+    /// Physical half-height for floor and ceiling contact (bounds_318190: 15.0 * scale)
+    pub fn phys_half(&self) -> f64 {
+        if self.mini { 9.0 } else { 15.0 }
     }
 
     /// gravity sign: +1 pulls down (normal), -1 pulls up
@@ -71,13 +91,13 @@ impl Player {
         self.vel_y * self.grav_sign() < -GRAVITY * 0.5
     }
 
-    fn speed_mult(&self) -> f64 {
+    fn speed_units(&self) -> f64 {
         SPEEDS[self.speed_idx as usize % 5]
     }
 
-    /// dx for this substep
+    /// dx for this substep (units/s ÷ 240Hz)
     pub fn dx(&self) -> f64 {
-        DT * X_VEL * self.speed_mult()
+        self.speed_units() / TICK_HZ
     }
 
     /// OpenGD update(): gravity + mode logic + vertical velocity; returns (dx, dy)
@@ -106,7 +126,7 @@ impl Player {
                 dy = dz * self.vel_y;
             }
             GameMode::Ship | GameMode::Swing => {
-                let mut accel = SHIP_ACCEL;
+                let accel = SHIP_ACCEL;
                 let boost = if self.falling() { SHIP_BOOST_FALLING } else { SHIP_BOOST };
                 let dir = if self.hold { SHIP_HOLD_MULT } else if !self.falling() { SHIP_RELEASE_MULT } else { 1.0 };
                 // swing: gravity never flips direction of control
@@ -117,15 +137,21 @@ impl Player {
                 self.vel_y = self.vel_y.clamp(lo, hi);
                 self.vel_y *= self.size();
                 dy = dz * self.vel_y;
-                let _ = accel;
-                accel = 0.0;
-                let _ = accel;
             }
             GameMode::Wave => {
-                // 45° slope: |vy| = vx, sign = hold ? up : down (gravity-aware)
+                // GD mini dart slope: calibration sweep via CAL_WAVE_SLOPE.
+                // Default 1/0.6; binary evidence pending (see session notes).
+                static SLOPE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+                let slope = *SLOPE.get_or_init(|| {
+                    std::env::var("CAL_WAVE_SLOPE")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(if cfg!(test) { 2.0 } else { 1.0 / 0.6 })
+                });
+                let slope = if self.mini { slope } else { 1.0 };
                 let s = if self.hold { 1.0 } else { -1.0 } * if self.grav_flip { -1.0 } else { 1.0 };
-                self.vel_y = s * X_VEL * self.speed_mult();
-                dy = DT * self.vel_y; // dt (not dz): exact 45°
+                self.vel_y = s * slope * self.speed_units();
+                dy = s * slope * self.dx();
             }
             GameMode::Spider => {
                 // no free physics: sits snapped until teleport
