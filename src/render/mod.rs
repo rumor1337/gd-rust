@@ -34,7 +34,7 @@ const BG_CHANNEL: u16 = 1000;
 pub struct Renderer {
     store: SpriteStore,
     /// lazily-decoded tiled background (png name, texture)
-    bg: Option<(String, Pixmap)>,
+    bg: Option<(String, (u8, u8, u8), Pixmap)>,
     fps: Option<u32>,
     /// prescaled sprites (extracted, tinted, rotated, downscaled to canvas
     /// resolution) cached per (texture, channel, rot, flips, scale)
@@ -228,9 +228,15 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
             .and_then(|(_, v)| v.parse().ok())
             .unwrap_or(1);
         let bg_name = format!("game_bg_{bg_id:02}_001-uhd.png");
-        if self.bg.as_ref().map(|(n, _)| n != &bg_name).unwrap_or(true) {
-            // GD paints texture × bg-channel color (kS38 ch 1000; GRIEF's is
-            // black, hence the dark look)
+        // reload when the texture name OR the live channel tint changes
+        // (otherwise the first untinted load gets cached and the bg reads
+        // blue through the gradient)
+        if self
+            .bg
+            .as_ref()
+            .map(|(n, t, _)| n != &bg_name || t != &bg_rgb)
+            .unwrap_or(true)
+        {
             let tint = bg_rgb;
             let tiled = Pixmap::load_png(self.store.dir().join(&bg_name)).ok().map(|mut p| {
                 if tint != (255, 255, 255) {
@@ -246,9 +252,9 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
                 }
                 p
             });
-            self.bg = tiled.map(|p| (bg_name, p));
+            self.bg = tiled.map(|p| (bg_name, tint, p));
         }
-        if let Some((_, tex)) = &self.bg {
+        if let Some((_, _, tex)) = &self.bg {
             let s = 512.0 * SCALE / tex.width() as f32;
             let tile_px = tex.width() as f32 * s;
             let mut paint = PixmapPaint::default();
@@ -417,7 +423,7 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
                             let mut paint = PixmapPaint::default();
                             paint.quality = FilterQuality::Bilinear;
                             let t = Transform::from_translate(dw as f32 / 2.0, dh as f32 / 2.0)
-                                .pre_concat(Transform::from_rotate(-obj.rot))
+                                .pre_concat(Transform::from_rotate(obj.rot))
                                 .pre_concat(Transform::from_scale(
                                     (if fx { -1.0 } else { 1.0 })
                                         * 0.25
@@ -553,7 +559,7 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
                         let mut paint = PixmapPaint::default();
                         paint.quality = FilterQuality::Bilinear;
                         let t = Transform::from_translate(dw as f32 / 2.0, dh as f32 / 2.0)
-                            .pre_concat(Transform::from_rotate(-obj.rot))
+                            .pre_concat(Transform::from_rotate(obj.rot))
                             .pre_concat(Transform::from_scale(
                                 (if fx { -1.0 } else { 1.0 }) * 0.25 * SCALE / SHEET_SCALE * kx,
                                 (if fy { -1.0 } else { 1.0 }) * 0.25 * SCALE / SHEET_SCALE * ky,
