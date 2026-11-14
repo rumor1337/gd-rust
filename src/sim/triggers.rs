@@ -117,6 +117,14 @@ pub struct TriggerEngine {
 }
 
 impl TriggerEngine {
+    /// full restart (GD classic respawn): every trigger re-arms
+    pub fn reset(&mut self) {
+        self.cursor = 0;
+        self.stopped.clear();
+        self.moved.clear();
+        self.running.clear();
+    }
+
     pub fn new(cmds: Vec<Cmd>, stops: Vec<StopTrigger>) -> Self {
         Self {
             cmds,

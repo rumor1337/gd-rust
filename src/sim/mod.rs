@@ -254,6 +254,7 @@ impl Sim {
     }
 
     fn respawn(&mut self) {
+        self.triggers.reset(); // classic respawn re-arms every trigger
         let (mode, speed, mini, flip, two_p) = self.level_start;
         let mut p0 = Player::new(mode, speed);
         p0.mini = mini;
