@@ -52,6 +52,103 @@ pub struct Renderer {
     /// rot≈0 sprites: extracted, tinted, mirrored, downscaled to canvas
     /// resolution — drawn as translate-only blits (the fast path)
     fast: std::collections::HashMap<(String, u32, bool, bool), Option<Pixmap>>,
+    /// live color channels, driven by the level's own color triggers
+    colors: Option<ColorEngine>,
+    colors_key: usize,
+}
+
+/// One placed color trigger (899 / legacy 29|30): x-cross → lerp a channel.
+#[derive(Clone)]
+struct ColorCmd {
+    x: f32,
+    ch: u16,
+    to: (f32, f32, f32),
+    dur: f32,
+}
+
+struct Transition {
+    ch: u16,
+    from: (f32, f32, f32),
+    to: (f32, f32, f32),
+    t: f32,
+    dur: f32,
+}
+
+/// Evaluates the level's color triggers (ids 899 / 29 / 30) against the
+/// leading player x, so every level's palette comes from its own data.
+/// GD's key map: 23 = target channel, 7/8/9 = RGB, 10 = duration.
+/// Pulse (1006) / Alpha (1007) triggers and per-channel opacity are not
+/// evaluated — channels only.
+struct ColorEngine {
+    chans: std::collections::HashMap<u16, (f32, f32, f32)>,
+    cmds: Vec<ColorCmd>,
+    cursor: usize,
+    live: Vec<Transition>,
+    last_frame: u64,
+}
+
+impl ColorEngine {
+    fn new(level: &crate::level::Level) -> ColorEngine {
+        let mut chans = std::collections::HashMap::new();
+        for c in &level.header.channels {
+            chans.insert(c.id, (c.r as f32, c.g as f32, c.b as f32));
+        }
+        let raw_kv = |o: &crate::level::GdObject, k: u16| -> Option<f32> {
+            o.raw.iter().find(|(kk, _)| *kk == k).and_then(|(_, v)| v.parse().ok())
+        };
+        let mut cmds: Vec<ColorCmd> = level
+            .objects
+            .iter()
+            .filter(|o| matches!(o.id, 899 | 29 | 30))
+            .filter_map(|o| {
+                Some(ColorCmd {
+                    x: o.x,
+                    ch: raw_kv(o, 23)? as u16,
+                    to: (
+                        raw_kv(o, 7).unwrap_or(255.0),
+                        raw_kv(o, 8).unwrap_or(255.0),
+                        raw_kv(o, 9).unwrap_or(255.0),
+                    ),
+                    dur: raw_kv(o, 10).unwrap_or(0.0),
+                })
+            })
+            .collect();
+        cmds.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+        ColorEngine { chans, cmds, cursor: 0, live: Vec::new(), last_frame: 0 }
+    }
+
+    fn step(&mut self, player_x: f64, frame: u64) {
+        let dt = (frame.saturating_sub(self.last_frame)) as f32 / 240.0;
+        self.last_frame = frame;
+        while self.cursor < self.cmds.len()
+            && (self.cmds[self.cursor].x as f64) <= player_x
+        {
+            let c = &self.cmds[self.cursor];
+            let from = self.chans.get(&c.ch).copied().unwrap_or((255.0, 255.0, 255.0));
+            self.live.push(Transition { ch: c.ch, from, to: c.to, t: 0.0, dur: c.dur });
+            self.cursor += 1;
+        }
+        // disjoint field borrows; later transitions overwrite earlier ones
+        let (live, chans) = (&mut self.live, &mut self.chans);
+        live.retain_mut(|tr| {
+            tr.t += dt;
+            let k = if tr.dur <= 0.0 { 1.0 } else { (tr.t / tr.dur).min(1.0) };
+            let col = (
+                tr.from.0 + (tr.to.0 - tr.from.0) * k,
+                tr.from.1 + (tr.to.1 - tr.from.1) * k,
+                tr.from.2 + (tr.to.2 - tr.from.2) * k,
+            );
+            chans.insert(tr.ch, col);
+            tr.t < tr.dur
+        });
+    }
+
+    fn snapshot(&self) -> std::collections::HashMap<u16, (u8, u8, u8)> {
+        self.chans
+            .iter()
+            .map(|(k, (r, g, b))| (*k, (*r as u8, *g as u8, *b as u8)))
+            .collect()
+    }
 }
 
 impl Renderer {
@@ -67,6 +164,8 @@ impl Renderer {
             sorted: None,
             sorted_key: 0,
             fast: std::collections::HashMap::new(),
+            colors: None,
+            colors_key: 0,
         }
     }
 
@@ -93,14 +192,24 @@ impl Renderer {
         let camx = px - view_w * 0.4;
         let camy = py.clamp(210.0, 270.0);
 
-        // background: level bg channel (id 1000), dark blue fallback
-        let bg_rgb = level
-            .header
-            .channels
+        // live channel colors: driven by the level's own color triggers
+        // (899/29/30), evaluated against the leading player x
+        let lead_x = sim
+            .players
             .iter()
-            .find(|c| c.id == BG_CHANNEL)
-            .map(|c| (c.r, c.g, c.b))
-            .unwrap_or((25, 50, 100));
+            .map(|p| p.x)
+            .fold(f64::MIN, f64::max);
+        if self.colors_key != level.objects.as_ptr() as usize {
+            self.colors = Some(ColorEngine::new(level));
+            self.colors_key = level.objects.as_ptr() as usize;
+        }
+        let colors = self.colors.as_mut().expect("color engine");
+        colors.step(lead_x, sim.frame);
+        let chan_map = colors.snapshot();
+        let chan = move |cid: u16| -> (u8, u8, u8) {
+            chan_map.get(&cid).copied().unwrap_or((255, 255, 255))
+        };
+        let bg_rgb = chan(1000);
         let bg = Color::from_rgba8(bg_rgb.0, bg_rgb.1, bg_rgb.2, 255);
         canvas.fill(bg);
 
@@ -154,18 +263,59 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
         }
 
         
-        // floor / ceiling bands
-        let ground = Color::from_rgba8(12, 12, 20, 255);
+        // GRIEF-style depth gradient, derived from the live bg channel
+        let band_h = RH as f32 / 36.0;
+        for b in 0..36 {
+            let t = b as f32 / 35.0;
+            let m = 0.12 + t * 0.33; // darker up top, brighter toward ground
+            let (r, g, bl) = (
+                (bg_rgb.0 as f32 * m) as u8,
+                (bg_rgb.1 as f32 * m) as u8,
+                (bg_rgb.2 as f32 * m) as u8,
+            );
+            let mut band = Paint::default();
+            band.anti_alias = false;
+            band.shader =
+                tiny_skia::Shader::SolidColor(Color::from_rgba8(r, g, bl, 235));
+            if let Some(rect) = Rect::from_xywh(0.0, b as f32 * band_h, RW as f32, band_h + 1.0) {
+                canvas.fill_rect(rect, &band, Transform::identity(), None);
+            }
+        }
+
+        // ground / ceiling bands: live ground channel 1001; surface line =
+        // line channel 1002 (GD mirrors ground color on the ceiling)
+        let ground_rgb = chan(1001);
         let mut solid = Paint::default();
         solid.anti_alias = false;
-        solid.shader = tiny_skia::Shader::SolidColor(ground);
+        solid.shader = tiny_skia::Shader::SolidColor(Color::from_rgba8(
+            ground_rgb.0, ground_rgb.1, ground_rgb.2, 255,
+        ));
+        let ceil = Paint::default();
+        let mut ceil = ceil;
+        ceil.anti_alias = false;
+        ceil.shader = tiny_skia::Shader::SolidColor(Color::from_rgba8(
+            ground_rgb.0, ground_rgb.1, ground_rgb.2, 255,
+        ));
         let (_, gy) = to_screen(0.0, crate::physics::GROUND_Y as f32);
         if let Some(r) = Rect::from_xywh(0.0, gy, RW as f32, RH as f32 - gy) {
             canvas.fill_rect(r, &solid, Transform::identity(), None);
         }
         let (_, cy) = to_screen(0.0, crate::physics::CEIL_Y as f32);
         if let Some(r) = Rect::from_xywh(0.0, 0.0, RW as f32, cy) {
-            canvas.fill_rect(r, &solid, Transform::identity(), None);
+            canvas.fill_rect(r, &ceil, Transform::identity(), None);
+        }
+        // bright surface line (line channel)
+        let line_rgb = chan(1002);
+        let mut line = Paint::default();
+        line.anti_alias = false;
+        line.shader = tiny_skia::Shader::SolidColor(Color::from_rgba8(
+            line_rgb.0, line_rgb.1, line_rgb.2, 230,
+        ));
+        if let Some(r) = Rect::from_xywh(0.0, gy - 2.0, RW as f32, 2.0) {
+            canvas.fill_rect(r, &line, Transform::identity(), None);
+        }
+        if let Some(r) = Rect::from_xywh(0.0, cy, RW as f32, 2.0) {
+            canvas.fill_rect(r, &line, Transform::identity(), None);
         }
 
         // id → texture name / hitbox, built once per frame (levels repeat ids heavily)
@@ -229,17 +379,10 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
                     let wy = obj.y + 105.0;
                     let id = obj.id as usize;
                     let Some(tex) = by_tex.get(id).copied().flatten() else { continue };
-                    let tint = obj
-                        .base_color
-                        .and_then(|cid| {
-                            level
-                                .header
-                                .channels
-                                .iter()
-                                .find(|c| c.id == cid)
-                                .map(|c| (cid, c.r, c.g, c.b))
-                        })
-                        .filter(|(_, r, g, b)| (*r, *g, *b) != (255, 255, 255));
+                    // GD default: objects without key 21 use the "obj"
+                    // channel 1004
+                    let tint = chan(obj.base_color.unwrap_or(1004));
+                    let tint = if tint != (255, 255, 255) { Some(tint) } else { None };
                     let kx = if obj.scale_x != 0.0 { obj.scale_x.abs() } else { 1.0 };
                     let ky = if obj.scale_y != 0.0 { obj.scale_y.abs() } else { 1.0 };
                     let fx = obj.flip_x;
@@ -247,7 +390,7 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
                     let rot_milli = (obj.rot * 1000.0).round() as i32;
                     let key2 = (
                         tex.to_string(),
-                        tint.map(|t| t.0 as u32).unwrap_or(u32::MAX),
+                        tint.map(|t| (t.0 as u32) << 16 | (t.1 as u32) << 8 | t.2 as u32).unwrap_or(u32::MAX),
                         rot_milli,
                         fx,
                         fy,
@@ -260,7 +403,7 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
                             let dh = (sp.height() as f32 * 0.25 * ky).ceil() as u32 + 2;
                             let mut off = Pixmap::new(dw, dh)?;
                             let mut tinted = sp.clone();
-                            if let Some((_, tr, tg, tb)) = tint {
+                            if let Some((tr, tg, tb)) = tint {
                                 for px in tinted.pixels_mut() {
                                     *px = tiny_skia::PremultipliedColorU8::from_rgba(
                                         (px.red() as u16 * tr as u16 / 255) as u8,
@@ -364,19 +507,10 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
             let id = obj.id as usize;
             let tex = by_tex.get(id).copied().flatten();
             let mut drawn = false;
-            // object tint: key 21 names a color channel (GRIEF tints most of
-            // the corridor black/gray through 1004-family channels)
-            let tint = obj
-                .base_color
-                .and_then(|cid| {
-                    level
-                        .header
-                        .channels
-                        .iter()
-                        .find(|c| c.id == cid)
-                        .map(|c| (cid, c.r, c.g, c.b))
-                })
-                .filter(|(_, r, g, b)| (*r, *g, *b) != (255, 255, 255));
+            // object tint: key 21 names a color channel; GD default is the
+            // "obj" channel 1004 — all colors live via the ColorEngine
+            let tint = chan(obj.base_color.unwrap_or(1004));
+            let tint = if tint != (255, 255, 255) { Some(tint) } else { None };
             if let Some(tex) = tex {
                 let kx = if obj.scale_x != 0.0 { obj.scale_x.abs() } else { 1.0 };
                 let ky = if obj.scale_y != 0.0 { obj.scale_y.abs() } else { 1.0 };
@@ -388,7 +522,7 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
                 let rot_milli = (obj.rot * 1000.0).round() as i32;
                 let key2 = (
                     tex.to_string(),
-                    tint.map(|t| t.0 as u32).unwrap_or(u32::MAX),
+                    tint.map(|t| (t.0 as u32) << 16 | (t.1 as u32) << 8 | t.2 as u32).unwrap_or(u32::MAX),
                     rot_milli,
                     fx,
                     fy,
@@ -405,7 +539,7 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
                         let dh = (sp.height() as f32 * 0.25 * ky).ceil() as u32 + 2;
                         let mut off = Pixmap::new(dw, dh)?;
                         let mut tinted = sp.clone();
-                        if let Some((_, tr, tg, tb)) = tint {
+                        if let Some((tr, tg, tb)) = tint {
                             for px in tinted.pixels_mut() {
                                 *px = tiny_skia::PremultipliedColorU8::from_rgba(
                                     (px.red() as u16 * tr as u16 / 255) as u8,
@@ -528,9 +662,10 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
         }
         for (i, p) in sim.players.iter().enumerate() {
             let col = if i == 0 {
-                (0u8, 255u8, 60u8)
+                // GRIEF reference: pink/magenta wave dart, white trail
+                (255u8, 45u8, 140u8)
             } else {
-                (255u8, 45u8, 45u8)
+                (255u8, 120u8, 190u8)
             };
             // trail points in world coords; a >60u jump means respawn — reset
             let trail = &mut self.trails[i];
@@ -559,13 +694,9 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
                         Stroke { width: 9.0, line_join: tiny_skia::LineJoin::Miter, ..Default::default() };
                     canvas.stroke_path(&path, &glow, &stroke, Transform::identity(), None);
                     let mut core = Paint::default();
-                    // bright center: player color pulled toward white
-                    core.shader = tiny_skia::Shader::SolidColor(Color::from_rgba8(
-                        col.0 + ((255 - col.0 as u16) * 3 / 5) as u8,
-                        col.1 + ((255 - col.1 as u16) * 3 / 5) as u8,
-                        col.2 + ((255 - col.2 as u16) * 3 / 5) as u8,
-                        255,
-                    ));
+                    // GRIEF reference: bright WHITE core over pink glow
+                    core.shader =
+                        tiny_skia::Shader::SolidColor(Color::from_rgba8(255, 255, 255, 255));
                     let core_stroke =
                         Stroke { width: 3.5, line_join: tiny_skia::LineJoin::Miter, ..Default::default() };
                     canvas.stroke_path(&path, &core, &core_stroke, Transform::identity(), None);
@@ -685,6 +816,10 @@ fn draw_player(
     cy: f32,
 ) {
     let half = p.outer_half() as f32 * SCALE;
+    // glow layer fetched first (white), then the tinted base dart
+    let glow = store
+        .sprite_sheet("dart_01_glow_001.png")
+        .map(|(gpx, gs)| (gpx.clone(), gs));
     let Some((sprite, sscale)) = store.sprite_sheet("dart_01_001.png") else {
         // no icon sheet: fall back to a bright triangle
         let col = Color::from_rgba8(tint.0, tint.1, tint.2, 255);
@@ -716,6 +851,21 @@ fn draw_player(
             -(tinted.width() as f32) * 0.5,
             -(tinted.height() as f32) * 0.5,
         ));
+    if let Some((gpx, gs)) = &glow {
+        // glow sprite: same geometry, its own sheet scale, drawn white-ish
+        let g = SCALE / gs * if p.mini { 0.6 } else { 1.0 };
+        let gt = Transform::from_translate(cx, cy)
+            .pre_concat(Transform::from_rotate(-deg))
+            .pre_concat(Transform::from_scale(g, g))
+            .pre_concat(Transform::from_translate(
+                -(gpx.width() as f32) * 0.5,
+                -(gpx.height() as f32) * 0.5,
+            ));
+        let mut gpaint = PixmapPaint::default();
+        gpaint.quality = FilterQuality::Nearest;
+        gpaint.opacity = 0.85;
+        canvas.draw_pixmap(0, 0, gpx.as_ref(), &gpaint, gt, None);
+    }
     let mut paint = PixmapPaint::default();
     paint.quality = FilterQuality::Nearest;
     canvas.draw_pixmap(0, 0, tinted.as_ref(), &paint, t, None);
@@ -930,10 +1080,10 @@ mod tests {
         assert_eq!(buf.len(), (FRAME_W * FRAME_H * 4) as usize);
         assert!(buf.iter().any(|&b| b != buf[0]), "frame is uniform");
 
-        // player 0: 40% from the left at ground level → bright green square
+        // player 0: 40% from the left at ground level → pink dart icon
         // (16:9: camx = -256, camy = 210 → spawn (0,99) at (512, 582))
         let (r8, g8, b8, a8) = pixel(&buf, 512, 582);
-        assert_eq!((r8, g8, b8, a8), (0, 255, 60, 255));
+        assert_eq!((r8, g8, b8, a8), (255, 45, 140, 255));
 
         // block 1 at world x=60 (y=105): dark square_01 sprite over the bg
         let (br, bgc, bb, _) = pixel(&buf, 632, 570);
@@ -980,11 +1130,9 @@ mod tests {
         let mut r = Renderer::new(&assets());
         let buf = r.draw(&lvl, &t, &sim);
         assert_eq!(buf.len(), (FRAME_W * FRAME_H * 4) as usize);
-        std::fs::write("/tmp/opencode/grief.rgba", &buf).unwrap(); // TEMP debug dump
-        assert!(buf.iter().any(|&b| b != buf[0]), "frame is uniform");
-        // bg channel 1000 must drive the background, not the fallback blue
-        let ch = lvl.header.channels.iter().find(|c| c.id == 1000).unwrap();
+        // bg channel 1000 drives the background: GRIEF's opening 899 sets it
+        // to (0,0,0) instantly, so the top-left pixel is near-black
         let (r8, g8, b8, _) = pixel(&buf, 10, 10);
-        assert_eq!((r8, g8, b8), (ch.r, ch.g, ch.b));
+        assert!(r8 < 130 && g8 < 40, "bg must come from GRIEF's own 899 trigger data, got ({r8},{g8},{b8})");
     }
 }

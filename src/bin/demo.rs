@@ -15,9 +15,10 @@ use minifb::{Key, Window, WindowOptions};
 
 fn main() {
     let manifest = env!("CARGO_MANIFEST_DIR");
-    let level = parse_level(
+    let mut level = parse_level(
         &std::fs::read_to_string(format!("{manifest}/levels/149992717.gmd")).unwrap(),
     );
+    level.id = 149992717;
     let table =
         ObjectTable::load(std::path::Path::new(&format!("{manifest}/data/objects.json"))).unwrap();
     let m = parse_gdr2(

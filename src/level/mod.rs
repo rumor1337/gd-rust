@@ -36,6 +36,8 @@ pub struct LevelHeader {
 pub struct Level {
     pub header: LevelHeader,
     pub objects: Vec<GdObject>,
+    /// level id (0 when parsed from an anonymous string; set by loaders)
+    pub id: u32,
 }
 
 const CHANNEL_KEYS: [&str; 7] = ["1", "2", "3", "6", "7", "5", "8"];
@@ -80,7 +82,7 @@ fn ka_start_pos(ka: &[(String, String)]) -> u16 {
 
 impl Default for Level {
     fn default() -> Self {
-        Level { header: LevelHeader::default(), objects: Vec::new() }
+        Level { header: LevelHeader::default(), objects: Vec::new(), id: 0 }
     }
 }
 
@@ -155,7 +157,7 @@ pub fn parse_level(s: &str) -> Level {
         .map(object::parse_object)
         .collect();
 
-    Level { header, objects }
+    Level { header, objects, id: 0 }
 }
 
 #[cfg(test)]

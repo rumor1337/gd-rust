@@ -12,9 +12,14 @@ use tiny_skia::Pixmap;
 fn main() {
     let manifest = env!("CARGO_MANIFEST_DIR");
     let tick: u64 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(200);
-    let level = parse_level(
-        &std::fs::read_to_string(format!("{manifest}/levels/149992717.gmd")).unwrap(),
+    let level_id: u32 = std::env::var("FRAME_LEVEL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(149992717);
+    let mut level = parse_level(
+        &std::fs::read_to_string(format!("{manifest}/levels/{level_id}.gmd")).unwrap(),
     );
+    level.id = level_id;
     let table =
         ObjectTable::load(std::path::Path::new(&format!("{manifest}/data/objects.json"))).unwrap();
     let m = parse_gdr2(

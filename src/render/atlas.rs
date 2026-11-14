@@ -38,13 +38,15 @@ pub struct SpriteStore {
 }
 
 /// (sheet name, sheet px per unit)
-const SHEETS: [(&str, f32); 6] = [
+const SHEETS: [(&str, f32); 7] = [
     ("GJ_GameSheet-uhd", 4.0),
     ("GJ_GameSheet02-uhd", 4.0),
     ("GJ_GameSheet03-uhd", 4.0),
     ("GJ_GameSheet04-uhd", 4.0),
     ("GJ_GameSheetGlow-uhd", 4.0),
     ("GJ_GameSheetIcons-hd", 2.0),
+    // player icons live in their own sheets (icons/dart_NN-uhd)
+    ("icons/dart_01-uhd", 4.0),
 ];
 
 impl SpriteStore {
