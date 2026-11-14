@@ -26,20 +26,25 @@ struct Sheet {
     png: PathBuf,
     frames: HashMap<String, Frame>,
     atlas: Option<Pixmap>,
+    /// sheet px per world unit (uhd = 4, hd = 2)
+    scale: f32,
 }
 
 pub(crate) struct SpriteStore {
     sheets: Vec<Sheet>,
     cache: HashMap<String, Pixmap>,
     misses: HashSet<String>,
+    dir: PathBuf,
 }
 
-const SHEETS: [&str; 5] = [
-    "GJ_GameSheet-uhd",
-    "GJ_GameSheet02-uhd",
-    "GJ_GameSheet03-uhd",
-    "GJ_GameSheet04-uhd",
-    "GJ_GameSheetGlow-uhd",
+/// (sheet name, sheet px per unit)
+const SHEETS: [(&str, f32); 6] = [
+    ("GJ_GameSheet-uhd", 4.0),
+    ("GJ_GameSheet02-uhd", 4.0),
+    ("GJ_GameSheet03-uhd", 4.0),
+    ("GJ_GameSheet04-uhd", 4.0),
+    ("GJ_GameSheetGlow-uhd", 4.0),
+    ("GJ_GameSheetIcons-hd", 2.0),
 ];
 
 impl SpriteStore {
@@ -56,42 +61,62 @@ impl SpriteStore {
         };
         let sheets = SHEETS
             .iter()
-            .filter_map(|name| {
+            .filter_map(|(name, scale)| {
                 let text = std::fs::read_to_string(dir.join(format!("{name}.plist"))).ok()?;
                 let png = dir.join(format!("{name}.png"));
-                Some(Sheet { png, frames: parse_plist(&text), atlas: None })
+                Some(Sheet { png, frames: parse_plist(&text), atlas: None, scale: *scale })
             })
             .collect();
-        SpriteStore { sheets, cache: HashMap::new(), misses: HashSet::new() }
+        SpriteStore { sheets, cache: HashMap::new(), misses: HashSet::new(), dir }
+    }
+
+    /// Resources dir (for standalone textures like the backgrounds).
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Extracted sprite (un-rotated, un-trimmed to source size) for a texture
+    /// name, cached on first use, with its sheet's px-per-unit scale.
+    pub(crate) fn sprite_sheet(&mut self, name: &str) -> Option<(&Pixmap, f32)> {
+        if !self.cache.contains_key(name) {
+            if self.misses.contains(name) {
+                return None;
+            }
+            let mut hit = None;
+            for sheet in &mut self.sheets {
+                let frame = sheet
+                    .frames
+                    .get(name)
+                    .or_else(|| sheet.frames.get(&format!("{name}.png")))
+                    .cloned();
+                let Some(frame) = frame else { continue };
+                if sheet.atlas.is_none() {
+                    sheet.atlas = Pixmap::load_png(&sheet.png).ok();
+                }
+                if let Some(pm) = sheet.atlas.as_ref().and_then(|a| extract(a, &frame)) {
+                    self.cache.insert(name.to_string(), pm);
+                    hit = Some(sheet.scale);
+                    break;
+                }
+            }
+            if hit.is_none() {
+                self.misses.insert(name.to_string());
+                return None;
+            }
+        }
+        let scale = self
+            .sheets
+            .iter()
+            .find(|s| s.frames.contains_key(name) || s.frames.contains_key(&format!("{name}.png")))
+            .map(|s| s.scale)
+            .unwrap_or(4.0);
+        self.cache.get(name).map(|p| (p, scale))
     }
 
     /// Extracted sprite (un-rotated, un-trimmed to source size) for a texture
     /// name, cached on first use. None if no sheet has it.
     pub(crate) fn sprite(&mut self, name: &str) -> Option<&Pixmap> {
-        if self.cache.contains_key(name) {
-            return self.cache.get(name);
-        }
-        if self.misses.contains(name) {
-            return None;
-        }
-        for sheet in &mut self.sheets {
-            let frame = sheet
-                .frames
-                .get(name)
-                .or_else(|| sheet.frames.get(&format!("{name}.png")))
-                .cloned();
-            let Some(frame) = frame else { continue };
-            if sheet.atlas.is_none() {
-                sheet.atlas = Pixmap::load_png(&sheet.png).ok();
-            }
-            let hit = sheet.atlas.as_ref().and_then(|a| extract(a, &frame));
-            if let Some(pm) = hit {
-                self.cache.insert(name.to_string(), pm);
-                return self.cache.get(name);
-            }
-        }
-        self.misses.insert(name.to_string());
-        None
+        self.sprite_sheet(name).map(|(p, _)| p)
     }
 }
 

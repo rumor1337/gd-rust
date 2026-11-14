@@ -15,8 +15,8 @@ pub struct GdObject {
     pub flip_y: bool,
     pub scale_x: f32,
     pub scale_y: f32,
-    pub base_color: Option<u8>,
-    pub detail_color: Option<u8>,
+    pub base_color: Option<u16>,
+    pub detail_color: Option<u16>,
     pub z_layer: Option<u8>,
     pub editor_layer: u8,
     pub groups: Vec<u16>,
@@ -72,8 +72,8 @@ pub fn parse_object(s: &str) -> GdObject {
             20 => {
                 let _ = v.parse::<u8>().map(|x| o.editor_layer = x);
             }
-            21 => o.base_color = v.parse::<u8>().ok(),
-            22 => o.detail_color = v.parse::<u8>().ok(),
+            21 => o.base_color = v.parse::<u16>().ok(),
+            22 => o.detail_color = v.parse::<u16>().ok(),
             24 => o.z_layer = v.parse::<u8>().ok(),
             25 => { /* zOrder, not groups (key 57 is the real group key) */ }
             33 => {

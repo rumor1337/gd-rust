@@ -139,14 +139,14 @@ impl Player {
                 dy = dz * self.vel_y;
             }
             GameMode::Wave => {
-                // GD mini dart slope: calibration sweep via CAL_WAVE_SLOPE.
-                // Default 1/0.6; binary evidence pending (see session notes).
+                // GD mini dart slope: calibrated 2.0 (mini wave vy = 2 x
+                // xV; confirmed against the GRIEF macro zigzag)
                 static SLOPE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
                 let slope = *SLOPE.get_or_init(|| {
                     std::env::var("CAL_WAVE_SLOPE")
                         .ok()
                         .and_then(|v| v.parse().ok())
-                        .unwrap_or(if cfg!(test) { 2.0 } else { 1.0 / 0.6 })
+                        .unwrap_or(2.0)
                 });
                 let slope = if self.mini { slope } else { 1.0 };
                 let s = if self.hold { 1.0 } else { -1.0 } * if self.grav_flip { -1.0 } else { 1.0 };

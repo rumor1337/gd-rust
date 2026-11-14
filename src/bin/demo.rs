@@ -44,11 +44,12 @@ fn main() {
     let mut fb = vec![0u32; FRAME_W as usize * FRAME_H as usize];
 
     while window.is_open() {
-        // 4 sim ticks per displayed frame = 240Hz at 60fps
+        // 4 sim ticks per displayed frame = 240Hz at 60fps (step_single =
+        // one 240Hz tick; the macro advances one frame per tick)
         for _ in 0..4 {
             // dead: brief pause, then a fresh attempt with the macro rewound
             if sim.state == gdrust::sim::RunState::Dead {
-                if sim.dead_frames >= gdrust::sim::DEATH_PAUSE_FRAMES {
+                if sim.dead_frames >= gdrust::sim::DEATH_PAUSE_FRAMES * 4 {
                     sim.reset();
                     pb = Playback::new(m.clone());
                 }
@@ -56,9 +57,9 @@ fn main() {
             if sim.state != gdrust::sim::RunState::Dead {
                 let (p1, p2) = pb.step();
                 // SWAP wiring: macro p2 (active player) drives sim p0
-                sim.step(InputState { hold: p2, hold_p2: p1 });
+                sim.step_single(InputState { hold: p2, hold_p2: p1 });
             } else {
-                sim.step(InputState { hold: false, hold_p2: false });
+                sim.step_single(InputState { hold: false, hold_p2: false });
             }
         }
         if window.is_key_pressed(Key::R, minifb::KeyRepeat::No) {

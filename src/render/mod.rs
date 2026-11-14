@@ -31,12 +31,14 @@ const BG_CHANNEL: u16 = 1000;
 
 pub struct Renderer {
     store: SpriteStore,
+    /// lazily-decoded tiled background (png name, texture)
+    bg: Option<(String, Pixmap)>,
 }
 
 impl Renderer {
     /// Missing sheets degrade to hitbox-outline rendering (see SpriteStore::load).
     pub fn new(assets_dir: &std::path::Path) -> Renderer {
-        Renderer { store: SpriteStore::load(assets_dir) }
+        Renderer { store: SpriteStore::load(assets_dir), bg: None }
     }
 
     /// Render one frame following player 0. Returns straight-alpha RGBA,
@@ -65,10 +67,41 @@ impl Renderer {
             .unwrap_or_else(|| Color::from_rgba8(25, 50, 100, 255));
         canvas.fill(bg);
 
-        let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
+let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
             ((wx - camx) * SCALE, FRAME_H as f32 * 0.5 - (wy - camy) * SCALE)
         };
 
+        // tiled background texture: kA6 bg id → game_bg_NN-uhd; one 1x
+        // texture tile spans 512u, slow horizontal parallax, bottom of the
+        // tile row anchored at the floor line
+        let bg_id: u32 = level
+            .header
+            .ka
+            .iter()
+            .find(|(k, _)| k == "kA6")
+            .and_then(|(_, v)| v.parse().ok())
+            .unwrap_or(1);
+        let bg_name = format!("game_bg_{bg_id:02}_001-uhd.png");
+        if self.bg.as_ref().map(|(n, _)| n != &bg_name).unwrap_or(true) {
+            self.bg = Pixmap::load_png(self.store.dir().join(&bg_name))
+                .ok()
+                .map(|p| (bg_name, p));
+        }
+        if let Some((_, tex)) = &self.bg {
+            let s = 512.0 * SCALE / tex.width() as f32;
+            let tile_px = tex.width() as f32 * s;
+            let mut paint = PixmapPaint::default();
+            paint.quality = FilterQuality::Bilinear;
+            let mut tx = -(camx * 0.125) % tile_px - tile_px;
+            let (_, ty) = to_screen(0.0, crate::physics::GROUND_Y as f32 + 512.0);
+            while tx < FRAME_W as f32 {
+                let t = Transform::from_translate(tx, ty).pre_concat(Transform::from_scale(s, s));
+                canvas.draw_pixmap(0, 0, tex.as_ref(), &paint, t, None);
+                tx += tile_px;
+            }
+        }
+
+        
         // floor / ceiling bands
         let ground = Color::from_rgba8(12, 12, 20, 255);
         let mut solid = Paint::default();
@@ -107,8 +140,29 @@ impl Renderer {
             let id = obj.id as usize;
             let tex = by_tex.get(id).copied().flatten();
             let mut drawn = false;
+            // object tint: key 21 names a color channel (GRIEF tints most of
+            // the corridor black/gray through 1004-family channels)
+            let tint = obj
+                .base_color
+                .and_then(|cid| level.header.channels.iter().find(|c| c.id == cid))
+                .map(|c| (c.r, c.g, c.b))
+                .filter(|t| *t != (255, 255, 255));
             if let Some(tex) = tex {
-                if let Some(sprite) = self.store.sprite(tex) {
+                let mut sprite = self.store.sprite(tex).cloned();
+                if let (Some(sp), Some((tr, tg, tb))) = (&mut sprite, tint) {
+                    // channels are premultiplied; scaling them by the tint
+                    // preserves the premultiplied invariant
+                    for px in sp.pixels_mut() {
+                        *px = tiny_skia::PremultipliedColorU8::from_rgba(
+                            (px.red() as u16 * tr as u16 / 255) as u8,
+                            (px.green() as u16 * tg as u16 / 255) as u8,
+                            (px.blue() as u16 * tb as u16 / 255) as u8,
+                            px.alpha(),
+                        )
+                        .unwrap();
+                    }
+                }
+                if let Some(sprite) = &sprite {
                     let kx = if obj.scale_x != 0.0 { obj.scale_x.abs() } else { 1.0 };
                     let ky = if obj.scale_y != 0.0 { obj.scale_y.abs() } else { 1.0 };
                     let ext = sprite
@@ -169,22 +223,66 @@ impl Renderer {
             }
         }
 
-        // players: bright shapes (atlas icons are a later task)
+        // players: the GD dart icon tinted per player (green p0, red p1)
         for (i, p) in sim.players.iter().enumerate() {
             let col = if i == 0 {
-                Color::from_rgba8(0, 255, 60, 255)
+                (0u8, 255u8, 60u8)
             } else {
-                Color::from_rgba8(255, 45, 45, 255)
+                (255u8, 45u8, 45u8)
             };
             let (cx, cy) = to_screen(p.x as f32, p.y as f32);
-            draw_player(&mut canvas, p, col, cx, cy);
+            draw_player(&mut canvas, &mut self.store, p, col, cx, cy);
         }
 
         unpremultiply(&canvas)
     }
 }
 
-fn draw_player(canvas: &mut Pixmap, p: &Player, col: Color, cx: f32, cy: f32) {
+fn draw_player(
+    canvas: &mut Pixmap,
+    store: &mut SpriteStore,
+    p: &Player,
+    tint: (u8, u8, u8),
+    cx: f32,
+    cy: f32,
+) {
+    let half = p.outer_half() as f32 * SCALE;
+    let Some((sprite, sscale)) = store.sprite_sheet("dart_01_001.png") else {
+        // no icon sheet: fall back to a bright triangle
+        let col = Color::from_rgba8(tint.0, tint.1, tint.2, 255);
+        draw_fallback(canvas, p, col, cx, cy);
+        return;
+    };
+    // icon px → screen: mini wave draws at 0.6× the icon's world size
+    let s = SCALE / sscale * if p.mini { 0.6 } else { 1.0 };
+    let vx = p.dx() as f32;
+    let vy = p.vel_y as f32;
+    let deg = vy.atan2(vx).to_degrees();
+    let mut tinted = sprite.clone();
+    for px in tinted.pixels_mut() {
+        let c = px.demultiply();
+        *px = tiny_skia::PremultipliedColorU8::from_rgba(
+            (c.red() as u16 * tint.0 as u16 / 255) as u8,
+            (c.green() as u16 * tint.1 as u16 / 255) as u8,
+            (c.blue() as u16 * tint.2 as u16 / 255) as u8,
+            c.alpha(),
+        )
+        .unwrap();
+    }
+    let t = Transform::from_translate(cx, cy)
+        .pre_concat(Transform::from_rotate(-deg))
+        .pre_concat(Transform::from_scale(s, s))
+        .pre_concat(Transform::from_translate(
+            -(tinted.width() as f32) * 0.5,
+            -(tinted.height() as f32) * 0.5,
+        ));
+    let mut paint = PixmapPaint::default();
+    paint.quality = FilterQuality::Bilinear;
+    canvas.draw_pixmap(0, 0, tinted.as_ref(), &paint, t, None);
+    let _ = half;
+}
+
+fn draw_fallback(canvas: &mut Pixmap, p: &Player, col: Color, cx: f32, cy: f32) {
     let half = p.outer_half() as f32 * SCALE;
     let mut paint = Paint::default();
     paint.shader = tiny_skia::Shader::SolidColor(col);
@@ -337,16 +435,23 @@ mod tests {
             let sim = Sim::new(&lvl, &t);
             r.draw(&lvl, &t, &sim)
         };
-        let bg = (25u8, 50u8, 100u8, 255u8);
         // A = upper-right of the cell (outside an up-pointing spike), B = lower-right
         let a = (587usize, 555usize);
         let b = (587, 588);
         let buf0 = render(0.0);
-        assert_eq!(pixel(&buf0, a.0, a.1), bg, "tip must be up at rot 0");
-        assert_ne!(pixel(&buf0, b.0, b.1), bg, "base must be drawn at rot 0");
         let buf180 = render(180.0);
-        assert_ne!(pixel(&buf180, a.0, a.1), bg, "tip must be down at rot 180");
-        assert_eq!(pixel(&buf180, b.0, b.1), bg, "top must be empty at rot 180");
+        // the bg is now a tiled texture — assert the sprite content flips
+        // with rotation rather than comparing against a flat color
+        assert_ne!(
+            pixel(&buf0, a.0, a.1),
+            pixel(&buf180, a.0, a.1),
+            "tip/base must flip between rot 0 and 180 at the cell's upper-right"
+        );
+        assert_ne!(
+            pixel(&buf0, b.0, b.1),
+            pixel(&buf180, b.0, b.1),
+            "tip/base must flip between rot 0 and 180 at the cell's lower-right"
+        );
     }
 
     #[test]
