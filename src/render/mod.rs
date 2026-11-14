@@ -34,12 +34,19 @@ pub struct Renderer {
     /// lazily-decoded tiled background (png name, texture)
     bg: Option<(String, Pixmap)>,
     fps: Option<u32>,
+    /// color-tinted sprites, cached per (texture, channel id)
+    tinted: std::collections::HashMap<(String, u16), Pixmap>,
 }
 
 impl Renderer {
     /// Missing sheets degrade to hitbox-outline rendering (see SpriteStore::load).
     pub fn new(assets_dir: &std::path::Path) -> Renderer {
-        Renderer { store: SpriteStore::load(assets_dir), bg: None, fps: None }
+        Renderer {
+            store: SpriteStore::load(assets_dir),
+            bg: None,
+            fps: None,
+            tinted: std::collections::HashMap::new(),
+        }
     }
 
     /// Show an fps counter (3x5 digits, top-right).
@@ -175,25 +182,42 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
             // the corridor black/gray through 1004-family channels)
             let tint = obj
                 .base_color
-                .and_then(|cid| level.header.channels.iter().find(|c| c.id == cid))
-                .map(|c| (c.r, c.g, c.b))
-                .filter(|t| *t != (255, 255, 255));
+                .and_then(|cid| {
+                    level
+                        .header
+                        .channels
+                        .iter()
+                        .find(|c| c.id == cid)
+                        .map(|c| (cid, c.r, c.g, c.b))
+                })
+                .filter(|(_, r, g, b)| (*r, *g, *b) != (255, 255, 255));
             if let Some(tex) = tex {
-                let mut sprite = self.store.sprite(tex).cloned();
-                if let (Some(sp), Some((tr, tg, tb))) = (&mut sprite, tint) {
-                    // channels are premultiplied; scaling them by the tint
-                    // preserves the premultiplied invariant
-                    for px in sp.pixels_mut() {
-                        *px = tiny_skia::PremultipliedColorU8::from_rgba(
-                            (px.red() as u16 * tr as u16 / 255) as u8,
-                            (px.green() as u16 * tg as u16 / 255) as u8,
-                            (px.blue() as u16 * tb as u16 / 255) as u8,
-                            px.alpha(),
-                        )
-                        .unwrap();
+                // tinted sprites are cached per (texture, channel): the clone +
+                // pixel multiply is a one-time cost, else the frame rate dies
+                let pixmap: Option<&Pixmap> = match tint {
+                    Some((cid, tr, tg, tb)) => {
+                        let key = (tex.to_string(), cid);
+                        if !self.tinted.contains_key(&key) {
+                            if let Some(mut sp) = self.store.sprite(tex).cloned() {
+                                // channels are premultiplied; scaling them by
+                                // the tint keeps the premultiplied invariant
+                                for px in sp.pixels_mut() {
+                                    *px = tiny_skia::PremultipliedColorU8::from_rgba(
+                                        (px.red() as u16 * tr as u16 / 255) as u8,
+                                        (px.green() as u16 * tg as u16 / 255) as u8,
+                                        (px.blue() as u16 * tb as u16 / 255) as u8,
+                                        px.alpha(),
+                                    )
+                                    .unwrap();
+                                }
+                                self.tinted.insert(key.clone(), sp);
+                            }
+                        }
+                        self.tinted.get(&key)
                     }
-                }
-                if let Some(sprite) = &sprite {
+                    None => self.store.sprite(tex),
+                };
+                if let Some(sprite) = &pixmap {
                     let kx = if obj.scale_x != 0.0 { obj.scale_x.abs() } else { 1.0 };
                     let ky = if obj.scale_y != 0.0 { obj.scale_y.abs() } else { 1.0 };
                     let ext = sprite
@@ -338,10 +362,11 @@ fn draw_player(
     };
     // icon px → screen: mini wave draws at 0.6× the icon's world size
     let s = SCALE / sscale * if p.mini { 0.6 } else { 1.0 };
-    /// dart icon art points UP natively; velocity angle is measured from +x
+    // dart icon art points RIGHT natively; tiny_skia's rotate() turns
+    // counter-clockwise on screen, so the plain atan2(vy, vx) aims it
     let vx = p.dx() as f32;
     let vy = p.vel_y as f32;
-    let deg = vy.atan2(vx).to_degrees() + 90.0;
+    let deg = vy.atan2(vx).to_degrees();
     let mut tinted = sprite.clone();
     for px in tinted.pixels_mut() {
         let c = px.demultiply();

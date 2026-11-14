@@ -30,7 +30,7 @@ struct Sheet {
     scale: f32,
 }
 
-pub(crate) struct SpriteStore {
+pub struct SpriteStore {
     sheets: Vec<Sheet>,
     cache: HashMap<String, Pixmap>,
     misses: HashSet<String>,
@@ -50,7 +50,7 @@ const SHEETS: [(&str, f32); 6] = [
 impl SpriteStore {
     /// Missing/undecodable sheets are skipped: the renderer degrades to
     /// hitbox outlines instead of failing.
-    pub(crate) fn load(dir: &Path) -> SpriteStore {
+    pub fn load(dir: &Path) -> SpriteStore {
         // a full game install keeps sheets under Resources/; resolve it so
         // e.g. ~/Documents/gd-clone works directly
         let resources = dir.join("Resources");
@@ -77,7 +77,7 @@ impl SpriteStore {
 
     /// Extracted sprite (un-rotated, un-trimmed to source size) for a texture
     /// name, cached on first use, with its sheet's px-per-unit scale.
-    pub(crate) fn sprite_sheet(&mut self, name: &str) -> Option<(&Pixmap, f32)> {
+    pub fn sprite_sheet(&mut self, name: &str) -> Option<(&Pixmap, f32)> {
         if !self.cache.contains_key(name) {
             if self.misses.contains(name) {
                 return None;
@@ -115,7 +115,7 @@ impl SpriteStore {
 
     /// Extracted sprite (un-rotated, un-trimmed to source size) for a texture
     /// name, cached on first use. None if no sheet has it.
-    pub(crate) fn sprite(&mut self, name: &str) -> Option<&Pixmap> {
+    pub fn sprite(&mut self, name: &str) -> Option<&Pixmap> {
         self.sprite_sheet(name).map(|(p, _)| p)
     }
 }
