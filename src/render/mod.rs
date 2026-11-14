@@ -14,11 +14,11 @@ use tiny_skia::{
     Transform,
 };
 
-pub const FRAME_W: u32 = 720;
-pub const FRAME_H: u32 = 1280;
-/// pixels per world unit: 320u vertical view = the 90..390 corridor + thin
-/// floor/ceiling bands
-const SCALE: f32 = 4.0;
+pub const FRAME_W: u32 = 1280;
+pub const FRAME_H: u32 = 720;
+/// pixels per world unit: 360u vertical view = the standard GD 12-block
+/// height, corridor 90..390 centered
+const SCALE: f32 = 2.0;
 /// uhd sheets are 4x retina: sprite px per world unit
 const SHEET_SCALE: f32 = 4.0;
 /// vertical half view in units
@@ -53,7 +53,7 @@ impl Renderer {
             .map(|p| (p.x as f32, p.y as f32))
             .unwrap_or((0.0, 240.0));
         let camx = px - view_w * 0.4;
-        let camy = py.clamp(230.0, 250.0);
+        let camy = py.clamp(210.0, 270.0);
 
         // background: level bg channel (id 1000), dark blue fallback
         let bg = level
@@ -314,13 +314,14 @@ mod tests {
         assert_eq!(buf.len(), (FRAME_W * FRAME_H * 4) as usize);
         assert!(buf.iter().any(|&b| b != buf[0]), "frame is uniform");
 
-        // player 0: 40% from the left + spawn_x shift, on the ground → bright green square
-        let (r8, g8, b8, a8) = pixel(&buf, 252, 1140);
+        // player 0: 40% from the left at ground level → bright green square
+        // (16:9: camx = -256, camy = 210 → spawn (0,99) at (512, 582))
+        let (r8, g8, b8, a8) = pixel(&buf, 512, 582);
         assert_eq!((r8, g8, b8, a8), (0, 255, 60, 255));
 
-        // block 1 at world x=60: dark square_01 sprite over the bg
-        let (br, bgc, bb, _) = pixel(&buf, 528, 1140);
-        let (fr, fg, fb, _) = pixel(&buf, 528, 1000);
+        // block 1 at world x=60 (y=105): dark square_01 sprite over the bg
+        let (br, bgc, bb, _) = pixel(&buf, 632, 570);
+        let (fr, fg, fb, _) = pixel(&buf, 632, 300);
         assert!(br != fr || bgc != fg || bb != fb, "block not drawn");
     }
 
@@ -329,8 +330,8 @@ mod tests {
         // spike_01_001's tip points up; rot=180 (world CCW) must point it down
         let t = table();
         let mut r = Renderer::new(&assets());
-        // world center of the spike: (30, 105) → screen (488, 1140)
-        // spike world center (30, 105) → screen x = 408 (spawn_x 0 camera), y 1140
+        // spike world center (30, 105) → screen (572, 570) (16:9 camera);
+        // 30u sprite = 60px cell → x [542, 602], y [540, 600]
         let mut render = |rot: f32| -> Vec<u8> {
             let lvl = synth(vec![(8, 30.0, 0.0, rot)]);
             let sim = Sim::new(&lvl, &t);
@@ -338,8 +339,8 @@ mod tests {
         };
         let bg = (25u8, 50u8, 100u8, 255u8);
         // A = upper-right of the cell (outside an up-pointing spike), B = lower-right
-        let a = (438usize, 1100usize);
-        let b = (438, 1170);
+        let a = (587usize, 555usize);
+        let b = (587, 588);
         let buf0 = render(0.0);
         assert_eq!(pixel(&buf0, a.0, a.1), bg, "tip must be up at rot 0");
         assert_ne!(pixel(&buf0, b.0, b.1), bg, "base must be drawn at rot 0");

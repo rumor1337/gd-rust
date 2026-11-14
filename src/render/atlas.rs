@@ -46,6 +46,14 @@ impl SpriteStore {
     /// Missing/undecodable sheets are skipped: the renderer degrades to
     /// hitbox outlines instead of failing.
     pub(crate) fn load(dir: &Path) -> SpriteStore {
+        // a full game install keeps sheets under Resources/; resolve it so
+        // e.g. ~/Documents/gd-clone works directly
+        let resources = dir.join("Resources");
+        let dir = if resources.join("GJ_GameSheet-uhd.plist").exists() {
+            resources
+        } else {
+            dir.to_path_buf()
+        };
         let sheets = SHEETS
             .iter()
             .filter_map(|name| {
