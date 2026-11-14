@@ -32,6 +32,8 @@ pub struct Player {
     pub queued_hold: bool,
     /// frames since robot jump start (robot sustained jump)
     pub robot_frames: f64,
+    /// y movement of the last tick (post-collision) — true travel direction
+    pub last_move_dy: f64,
     /// riding a slope this tick (GD m_isOnSlope; cleared each pass)
     pub slope_on: bool,
     /// GD m_isCurrentSlopeTop: slopeFloorTop of the last ridden slope
@@ -56,6 +58,7 @@ impl Player {
             hold: false,
             queued_hold: false,
             robot_frames: 99.0,
+            last_move_dy: 0.0,
             slope_on: false,
             slope_top: None,
             slope_id: None,

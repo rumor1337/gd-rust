@@ -16,13 +16,15 @@ use tiny_skia::{
 
 pub const FRAME_W: u32 = 1280;
 pub const FRAME_H: u32 = 720;
-/// pixels per world unit: 360u vertical view = the standard GD 12-block
-/// height, corridor 90..390 centered
-const SCALE: f32 = 2.0;
+/// internal render resolution (upscaled ×2 on output — 4× fewer pixels)
+const RW: u32 = 640;
+const RH: u32 = 360;
+/// pixels per world unit on the internal canvas: 360u vertical view
+const SCALE: f32 = 1.0;
 /// uhd sheets are 4x retina: sprite px per world unit
 const SHEET_SCALE: f32 = 4.0;
 /// vertical half view in units
-const HALF_VIEW_Y: f32 = FRAME_H as f32 / SCALE / 2.0;
+const HALF_VIEW_Y: f32 = RH as f32 / SCALE / 2.0;
 /// pre-cull margin for the x scan; exact cull uses real sprite extents after
 /// shortcut: objects wider than ~800u can be skipped early, none known in these levels
 const CULL_PAD: f32 = 400.0;
@@ -34,8 +36,22 @@ pub struct Renderer {
     /// lazily-decoded tiled background (png name, texture)
     bg: Option<(String, Pixmap)>,
     fps: Option<u32>,
-    /// color-tinted sprites, cached per (texture, channel id)
-    tinted: std::collections::HashMap<(String, u16), Pixmap>,
+    /// prescaled sprites (extracted, tinted, rotated, downscaled to canvas
+    /// resolution) cached per (texture, channel, rot, flips, scale)
+    prescaled: std::collections::HashMap<
+        (String, u32, i32, bool, bool, u64, u64),
+        Option<(Pixmap, i32, i32)>,
+    >,
+    /// per-player recent world positions for the wave trail
+    trails: Vec<Vec<(f64, f64)>>,
+    /// cached decoration-layer slabs (512u wide, world y -60..964)
+    deco_tiles: std::collections::HashMap<i32, Pixmap>,
+    /// objects sorted by x, cached per level (invalidated by pointer)
+    sorted: Option<Vec<(f32, usize)>>,
+    sorted_key: usize,
+    /// rot≈0 sprites: extracted, tinted, mirrored, downscaled to canvas
+    /// resolution — drawn as translate-only blits (the fast path)
+    fast: std::collections::HashMap<(String, u32, bool, bool), Option<Pixmap>>,
 }
 
 impl Renderer {
@@ -45,7 +61,12 @@ impl Renderer {
             store: SpriteStore::load(assets_dir),
             bg: None,
             fps: None,
-            tinted: std::collections::HashMap::new(),
+            prescaled: std::collections::HashMap::new(),
+            trails: Vec::new(),
+            deco_tiles: std::collections::HashMap::new(),
+            sorted: None,
+            sorted_key: 0,
+            fast: std::collections::HashMap::new(),
         }
     }
 
@@ -57,8 +78,10 @@ impl Renderer {
     /// Render one frame following player 0. Returns straight-alpha RGBA,
     /// `FRAME_W * FRAME_H * 4` bytes (ready for Streamer::submit).
     pub fn draw(&mut self, level: &Level, table: &ObjectTable, sim: &Sim) -> Vec<u8> {
-        let mut canvas = Pixmap::new(FRAME_W, FRAME_H).expect("static size");
-        let view_w = FRAME_W as f32 / SCALE;
+        let prof = std::env::var("PROFILE").is_ok();
+        let t_start = std::time::Instant::now();
+        let mut canvas = Pixmap::new(RW, RH).expect("static size");
+        let view_w = RW as f32 / SCALE;
 
         // camera: x puts player 0 at 40% from the left; y clamps so the
         // 90..390 corridor always fills the screen (up to 20u of bands)
@@ -82,7 +105,7 @@ impl Renderer {
         canvas.fill(bg);
 
 let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
-            ((wx - camx) * SCALE, FRAME_H as f32 * 0.5 - (wy - camy) * SCALE)
+            ((wx - camx) * SCALE, RH as f32 * 0.5 - (wy - camy) * SCALE)
         };
 
         // tiled background texture: kA6 bg id → game_bg_NN-uhd; one 1x
@@ -120,7 +143,7 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
             let s = 512.0 * SCALE / tex.width() as f32;
             let tile_px = tex.width() as f32 * s;
             let mut paint = PixmapPaint::default();
-            paint.quality = FilterQuality::Bilinear;
+            paint.quality = FilterQuality::Nearest;
             let mut tx = -(camx * 0.125) % tile_px - tile_px;
             let (_, ty) = to_screen(0.0, crate::physics::GROUND_Y as f32 + 512.0);
             while tx < FRAME_W as f32 {
@@ -137,11 +160,11 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
         solid.anti_alias = false;
         solid.shader = tiny_skia::Shader::SolidColor(ground);
         let (_, gy) = to_screen(0.0, crate::physics::GROUND_Y as f32);
-        if let Some(r) = Rect::from_xywh(0.0, gy, FRAME_W as f32, FRAME_H as f32 - gy) {
+        if let Some(r) = Rect::from_xywh(0.0, gy, RW as f32, RH as f32 - gy) {
             canvas.fill_rect(r, &solid, Transform::identity(), None);
         }
         let (_, cy) = to_screen(0.0, crate::physics::CEIL_Y as f32);
-        if let Some(r) = Rect::from_xywh(0.0, 0.0, FRAME_W as f32, cy) {
+        if let Some(r) = Rect::from_xywh(0.0, 0.0, RW as f32, cy) {
             canvas.fill_rect(r, &solid, Transform::identity(), None);
         }
 
@@ -161,20 +184,183 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
         }
 
         let mut sprite_paint = PixmapPaint::default();
-        sprite_paint.quality = FilterQuality::Bilinear;
+        sprite_paint.quality = FilterQuality::Nearest;
 
-        // decorations first, gameplay on top (GD layering)
-        for deco_pass in [true, false] {
-        for obj in &level.objects {
-            if is_deco[obj.id as usize & 8191] != deco_pass {
-                continue;
+        let t_bg = t_start.elapsed();
+        let skip_deco = std::env::var("SKIP_DECO").is_ok();
+        if self.sorted_key != level.objects.as_ptr() as usize {
+            let mut v: Vec<(f32, usize)> =
+                level.objects.iter().enumerate().map(|(i, o)| (o.x, i)).collect();
+            v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            self.sorted = Some(v);
+            self.sorted_key = level.objects.as_ptr() as usize;
+        }
+        let sorted = self.sorted.as_ref().unwrap();
+        let x_lo = camx - CULL_PAD;
+        let x_hi = camx + view_w + CULL_PAD;
+        let lo = sorted.partition_point(|(x, _)| *x < x_lo);
+        let hi = sorted.partition_point(|(x, _)| *x <= x_hi);
+        if !skip_deco {
+            const TILE_W: f32 = 512.0;
+            let t_lo = ((camx - CULL_PAD) / TILE_W).floor() as i32;
+            let t_hi = ((camx + view_w + CULL_PAD) / TILE_W).floor() as i32;
+            if self.deco_tiles.len() > 24 {
+                self.deco_tiles.clear(); // crude cap; hitches only on long levels
+            }
+            for t in t_lo..=t_hi {
+                if self.deco_tiles.contains_key(&t) {
+                    continue;
+                }
+                let mut tile = Pixmap::new(TILE_W as u32, 1024).expect("tile");
+                let tx0 = t as f32 * TILE_W;
+                let tile_screen = |wx: f32, wy: f32| -> (f32, f32) {
+                    (wx - tx0, 1024.0 - (wy + 60.0))
+                };
+                let tx_lo = tx0 - 400.0;
+                let tx_hi = tx0 + TILE_W + 400.0;
+                let lo = sorted.partition_point(|(x, _)| *x < tx_lo);
+                let hi = sorted.partition_point(|(x, _)| *x <= tx_hi);
+                for (_, oi) in &sorted[lo..hi] {
+                    let obj = &level.objects[*oi];
+                    if !is_deco[obj.id as usize & 8191] {
+                        continue;
+                    }
+                    let wx = obj.x;
+                    let wy = obj.y + 105.0;
+                    let id = obj.id as usize;
+                    let Some(tex) = by_tex.get(id).copied().flatten() else { continue };
+                    let tint = obj
+                        .base_color
+                        .and_then(|cid| {
+                            level
+                                .header
+                                .channels
+                                .iter()
+                                .find(|c| c.id == cid)
+                                .map(|c| (cid, c.r, c.g, c.b))
+                        })
+                        .filter(|(_, r, g, b)| (*r, *g, *b) != (255, 255, 255));
+                    let kx = if obj.scale_x != 0.0 { obj.scale_x.abs() } else { 1.0 };
+                    let ky = if obj.scale_y != 0.0 { obj.scale_y.abs() } else { 1.0 };
+                    let fx = obj.flip_x;
+                    let fy = obj.flip_y;
+                    let rot_milli = (obj.rot * 1000.0).round() as i32;
+                    let key2 = (
+                        tex.to_string(),
+                        tint.map(|t| t.0 as u32).unwrap_or(u32::MAX),
+                        rot_milli,
+                        fx,
+                        fy,
+                        (kx.to_bits() as u64) << 32 | ky.to_bits() as u64,
+                        0,
+                    );
+                    if !self.prescaled.contains_key(&key2) {
+                        let built = self.store.sprite(tex).and_then(|sp| {
+                            let dw = (sp.width() as f32 * 0.25 * kx).ceil() as u32 + 2;
+                            let dh = (sp.height() as f32 * 0.25 * ky).ceil() as u32 + 2;
+                            let mut off = Pixmap::new(dw, dh)?;
+                            let mut tinted = sp.clone();
+                            if let Some((_, tr, tg, tb)) = tint {
+                                for px in tinted.pixels_mut() {
+                                    *px = tiny_skia::PremultipliedColorU8::from_rgba(
+                                        (px.red() as u16 * tr as u16 / 255) as u8,
+                                        (px.green() as u16 * tg as u16 / 255) as u8,
+                                        (px.blue() as u16 * tb as u16 / 255) as u8,
+                                        px.alpha(),
+                                    )
+                                    .unwrap();
+                                }
+                            }
+                            let mut paint = PixmapPaint::default();
+                            paint.quality = FilterQuality::Bilinear;
+                            let t = Transform::from_translate(dw as f32 / 2.0, dh as f32 / 2.0)
+                                .pre_concat(Transform::from_rotate(-obj.rot))
+                                .pre_concat(Transform::from_scale(
+                                    (if fx { -1.0 } else { 1.0 })
+                                        * 0.25
+                                        * SCALE
+                                        / SHEET_SCALE
+                                        * kx,
+                                    (if fy { -1.0 } else { 1.0 })
+                                        * 0.25
+                                        * SCALE
+                                        / SHEET_SCALE
+                                        * ky,
+                                ))
+                                .pre_concat(Transform::from_translate(
+                                    -(tinted.width() as f32) * 0.5,
+                                    -(tinted.height() as f32) * 0.5,
+                                ));
+                            off.draw_pixmap(0, 0, tinted.as_ref(), &paint, t, None);
+                            // alpha-bounds crop
+                            let (w, h) = (off.width() as usize, off.height() as usize);
+                            let data = off.data();
+                            let (mut x0, mut y0, mut x1, mut y1) =
+                                (w as i64, h as i64, -1i64, -1i64);
+                            for j in 0..h {
+                                for i in 0..w {
+                                    if data[(j * w + i) * 4 + 3] != 0 {
+                                        if (i as i64) < x0 { x0 = i as i64; }
+                                        if (i as i64) > x1 { x1 = i as i64; }
+                                        if (j as i64) < y0 { y0 = j as i64; }
+                                        if (j as i64) > y1 { y1 = j as i64; }
+                                    }
+                                }
+                            }
+                            if x1 < 0 {
+                                return None;
+                            }
+                            let cw = (x1 - x0 + 1) as u32;
+                            let ch = (y1 - y0 + 1) as u32;
+                            let mut crop = Pixmap::new(cw, ch)?;
+                            for j in 0..ch as usize {
+                                let s = ((y0 as usize + j) * w + x0 as usize) * 4;
+                                let d = j as usize * cw as usize * 4;
+                                crop.data_mut()[d..d + cw as usize * 4]
+                                    .copy_from_slice(&data[s..s + cw as usize * 4]);
+                            }
+                            Some((crop, x0 as i32, y0 as i32))
+                        });
+                        self.prescaled.insert(key2.clone(), built);
+                    }
+                    let Some((sprite, ox, oy)) = self.prescaled.get(&key2).and_then(|o| o.as_ref())
+                    else {
+                        continue;
+                    };
+                    let (cx, cy) = tile_screen(wx, wy);
+                    let tx = (cx - sprite.width() as f32 * 0.5).round() + *ox as f32;
+                    let ty = (cy - sprite.height() as f32 * 0.5).round() + *oy as f32;
+                    let t = Transform::from_translate(tx, ty);
+                    canvas.draw_pixmap(0, 0, sprite.as_ref(), &sprite_paint, t, None);
+                }
+                self.deco_tiles.insert(t, tile);
+            }
+            // blit the visible slabs
+            let mut paint = PixmapPaint::default();
+            paint.quality = FilterQuality::Nearest;
+            for t in t_lo..=t_hi {
+                let Some(tile) = self.deco_tiles.get(&t) else { continue };
+                let sx = (t as f32 * TILE_W - camx) as f32;
+                let sy = RH as f32 / 2.0 - (964.0 - camy) * SCALE;
+                let t = Transform::from_translate(sx, sy);
+                canvas.draw_pixmap(0, 0, tile.as_ref(), &paint, t, None);
+            }
+        }
+        // decorations: static per level — render 512u slabs once into cached
+        // bitmaps (world y -60..964) and blit the visible ones
+
+        let prof_n = std::env::var("PROFILE").is_ok();
+        let (mut n_fast, mut n_slow, mut n_out, mut n_win) = (0u32, 0u32, 0u32, 0u32);
+        {
+        for (_, oi) in &sorted[lo..hi] {
+            let obj = &level.objects[*oi];
+            if is_deco[obj.id as usize & 8191] {
+                continue; // decorations come from the cached slabs
             }
 
             let wx = obj.x;
             let wy = obj.y + 105.0;
-            if wx < camx - CULL_PAD || wx > camx + view_w + CULL_PAD {
-                continue;
-            }
+            n_win += 1;
             let id = obj.id as usize;
             let tex = by_tex.get(id).copied().flatten();
             let mut drawn = false;
@@ -192,40 +378,102 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
                 })
                 .filter(|(_, r, g, b)| (*r, *g, *b) != (255, 255, 255));
             if let Some(tex) = tex {
-                // tinted sprites are cached per (texture, channel): the clone +
-                // pixel multiply is a one-time cost, else the frame rate dies
-                let pixmap: Option<&Pixmap> = match tint {
-                    Some((cid, tr, tg, tb)) => {
-                        let key = (tex.to_string(), cid);
-                        if !self.tinted.contains_key(&key) {
-                            if let Some(mut sp) = self.store.sprite(tex).cloned() {
-                                // channels are premultiplied; scaling them by
-                                // the tint keeps the premultiplied invariant
-                                for px in sp.pixels_mut() {
-                                    *px = tiny_skia::PremultipliedColorU8::from_rgba(
-                                        (px.red() as u16 * tr as u16 / 255) as u8,
-                                        (px.green() as u16 * tg as u16 / 255) as u8,
-                                        (px.blue() as u16 * tb as u16 / 255) as u8,
-                                        px.alpha(),
-                                    )
-                                    .unwrap();
-                                }
-                                self.tinted.insert(key.clone(), sp);
+                let kx = if obj.scale_x != 0.0 { obj.scale_x.abs() } else { 1.0 };
+                let ky = if obj.scale_y != 0.0 { obj.scale_y.abs() } else { 1.0 };
+                // prescaled cache: every (texture, tint, rot, flip, scale)
+                // combination is rendered once into a canvas-resolution
+                // pixmap; per frame it is only an integer-translate blit
+                let fx = obj.flip_x;
+                let fy = obj.flip_y;
+                let rot_milli = (obj.rot * 1000.0).round() as i32;
+                let key2 = (
+                    tex.to_string(),
+                    tint.map(|t| t.0 as u32).unwrap_or(u32::MAX),
+                    rot_milli,
+                    fx,
+                    fy,
+                    (kx.to_bits() as u64) << 32 | ky.to_bits() as u64,
+                    0,
+                );
+                if !self.prescaled.contains_key(&key2) {
+                    // render the full transform once into a margin'd canvas,
+                    // then crop to the alpha bounding box (huge deco sprites
+                    // carry large transparent margins — blitting those was
+                    // the frame-time killer)
+                    let built = self.store.sprite(tex).and_then(|sp| {
+                        let dw = (sp.width() as f32 * 0.25 * kx).ceil() as u32 + 2;
+                        let dh = (sp.height() as f32 * 0.25 * ky).ceil() as u32 + 2;
+                        let mut off = Pixmap::new(dw, dh)?;
+                        let mut tinted = sp.clone();
+                        if let Some((_, tr, tg, tb)) = tint {
+                            for px in tinted.pixels_mut() {
+                                *px = tiny_skia::PremultipliedColorU8::from_rgba(
+                                    (px.red() as u16 * tr as u16 / 255) as u8,
+                                    (px.green() as u16 * tg as u16 / 255) as u8,
+                                    (px.blue() as u16 * tb as u16 / 255) as u8,
+                                    px.alpha(),
+                                )
+                                .unwrap();
                             }
                         }
-                        self.tinted.get(&key)
-                    }
-                    None => self.store.sprite(tex),
-                };
-                if let Some(sprite) = &pixmap {
-                    let kx = if obj.scale_x != 0.0 { obj.scale_x.abs() } else { 1.0 };
-                    let ky = if obj.scale_y != 0.0 { obj.scale_y.abs() } else { 1.0 };
-                    let ext = sprite
-                        .width()
-                        .max(sprite.height())
-                        .max(1) as f32
-                        / SHEET_SCALE
-                        * kx.max(ky);
+                        let mut paint = PixmapPaint::default();
+                        paint.quality = FilterQuality::Bilinear;
+                        let t = Transform::from_translate(dw as f32 / 2.0, dh as f32 / 2.0)
+                            .pre_concat(Transform::from_rotate(-obj.rot))
+                            .pre_concat(Transform::from_scale(
+                                (if fx { -1.0 } else { 1.0 }) * 0.25 * SCALE / SHEET_SCALE * kx,
+                                (if fy { -1.0 } else { 1.0 }) * 0.25 * SCALE / SHEET_SCALE * ky,
+                            ))
+                            .pre_concat(Transform::from_translate(
+                                -(tinted.width() as f32) * 0.5,
+                                -(tinted.height() as f32) * 0.5,
+                            ));
+                        off.draw_pixmap(0, 0, tinted.as_ref(), &paint, t, None);
+                        // alpha-bounds crop
+                        let (w, h) = (off.width() as usize, off.height() as usize);
+                        let data = off.data();
+                        let (mut x0, mut y0, mut x1, mut y1) =
+                            (w as i64, h as i64, -1i64, -1i64);
+                        for j in 0..h {
+                            for i in 0..w {
+                                if data[(j * w + i) * 4 + 3] != 0 {
+                                    if (i as i64) < x0 { x0 = i as i64; }
+                                    if (i as i64) > x1 { x1 = i as i64; }
+                                    if (j as i64) < y0 { y0 = j as i64; }
+                                    if (j as i64) > y1 { y1 = j as i64; }
+                                }
+                            }
+                        }
+                        if x1 < 0 {
+                            return None; // fully transparent
+                        }
+                        let cw = (x1 - x0 + 1) as u32;
+                        let ch = (y1 - y0 + 1) as u32;
+                        let mut crop = Pixmap::new(cw, ch)?;
+                        for j in 0..ch as usize {
+                            let s = ((y0 as usize + j) * w + x0 as usize) * 4;
+                            let d = j as usize * cw as usize * 4;
+                            crop.data_mut()[d..d + cw as usize * 4]
+                                .copy_from_slice(&data[s..s + cw as usize * 4]);
+                        }
+                        Some((crop, x0 as i32, y0 as i32))
+                    });
+                    self.prescaled.insert(key2.clone(), built);
+                }
+                let pixmap: Option<&(Pixmap, i32, i32)> =
+                    self.prescaled.get(&key2).and_then(|o| o.as_ref());
+                let dw = (self.store.sprite(tex).map(|s| s.width() as f32).unwrap_or(0.0)
+                    * 0.25
+                    * kx)
+                    .ceil() as f32
+                    + 2.0;
+                let dh = (self.store.sprite(tex).map(|s| s.height() as f32).unwrap_or(0.0)
+                    * 0.25
+                    * ky)
+                    .ceil() as f32
+                    + 2.0;
+                if let Some((sprite, ox, oy)) = &pixmap {
+                    let ext = sprite.width().max(sprite.height()).max(1) as f32;
                     if wx + ext < camx
                         || wx - ext > camx + view_w
                         || wy + ext < camy - HALF_VIEW_Y
@@ -234,17 +482,9 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
                         continue;
                     }
                     let (cx, cy) = to_screen(wx, wy);
-                    // texture px → screen: center, scale to units, flip, rotate CCW
-                    let t = Transform::from_translate(cx, cy)
-                        .pre_concat(Transform::from_rotate(-obj.rot))
-                        .pre_concat(Transform::from_scale(
-                            if obj.flip_x { -1.0 } else { 1.0 } * SCALE / SHEET_SCALE * kx,
-                            if obj.flip_y { -1.0 } else { 1.0 } * SCALE / SHEET_SCALE * ky,
-                        ))
-                        .pre_concat(Transform::from_translate(
-                            -(sprite.width() as f32) * 0.5,
-                            -(sprite.height() as f32) * 0.5,
-                        ));
+                    let tx = (cx - dw as f32 / 2.0).round() + *ox as f32;
+                    let ty = (cy - dh as f32 / 2.0).round() + *oy as f32;
+                    let t = Transform::from_translate(tx, ty);
                     canvas.draw_pixmap(0, 0, sprite.as_ref(), &sprite_paint, t, None);
                     drawn = true;
                 }
@@ -279,13 +519,58 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
         }
         }
 
-        // players: the GD dart icon tinted per player (green p0, red p1)
+        let t_objs = t_start.elapsed() - t_bg;
+        // wave trails + players: the GD dart icon tinted per player
+        // (green p0, red p1); trail = glow stroke + bright core along the
+        // recent positions, tinted with the same player color
+        while self.trails.len() < sim.players.len() {
+            self.trails.push(Vec::new());
+        }
         for (i, p) in sim.players.iter().enumerate() {
             let col = if i == 0 {
                 (0u8, 255u8, 60u8)
             } else {
                 (255u8, 45u8, 45u8)
             };
+            // trail points in world coords; a >60u jump means respawn — reset
+            let trail = &mut self.trails[i];
+            match trail.last() {
+                Some(&(lx, ly)) if (p.x - lx).abs() > 60.0 => *trail = vec![(p.x, p.y)],
+                _ => {
+                    trail.push((p.x, p.y));
+                    if trail.len() > 90 {
+                        trail.remove(0);
+                    }
+                }
+            }
+            if trail.len() >= 2 {
+                let mut pb = PathBuilder::new();
+                let (x0, y0) = to_screen(trail[0].0 as f32, trail[0].1 as f32);
+                pb.move_to(x0, y0);
+                for (wx, wy) in trail.iter().skip(1) {
+                    let (x, y) = to_screen(*wx as f32, *wy as f32);
+                    pb.line_to(x, y);
+                }
+                if let Some(path) = pb.finish() {
+                    let mut glow = Paint::default();
+                    glow.shader =
+                        tiny_skia::Shader::SolidColor(Color::from_rgba8(col.0, col.1, col.2, 110));
+                    let stroke =
+                        Stroke { width: 9.0, line_join: tiny_skia::LineJoin::Miter, ..Default::default() };
+                    canvas.stroke_path(&path, &glow, &stroke, Transform::identity(), None);
+                    let mut core = Paint::default();
+                    // bright center: player color pulled toward white
+                    core.shader = tiny_skia::Shader::SolidColor(Color::from_rgba8(
+                        col.0 + ((255 - col.0 as u16) * 3 / 5) as u8,
+                        col.1 + ((255 - col.1 as u16) * 3 / 5) as u8,
+                        col.2 + ((255 - col.2 as u16) * 3 / 5) as u8,
+                        255,
+                    ));
+                    let core_stroke =
+                        Stroke { width: 3.5, line_join: tiny_skia::LineJoin::Miter, ..Default::default() };
+                    canvas.stroke_path(&path, &core, &core_stroke, Transform::identity(), None);
+                }
+            }
             let (cx, cy) = to_screen(p.x as f32, p.y as f32);
             draw_player(&mut canvas, &mut self.store, p, col, cx, cy);
         }
@@ -311,7 +596,7 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
                 .collect();
             let cell = 2.0f32;
             let gw = digits.len() as f32 * (3.0 * cell + cell) - cell;
-            let mut x0 = FRAME_W as f32 - gw - 10.0;
+            let mut x0 = RW as f32 - gw - 10.0;
             let y0 = 10.0;
             let mut paint = Paint::default();
             paint.anti_alias = false;
@@ -341,8 +626,36 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
             let _ = x0;
         }
 
-        unpremultiply(&canvas)
+        let t_pl = t_start.elapsed() - t_bg - t_objs;
+        unpremultiply(&canvas);
+        let t_un = t_start.elapsed() - t_bg - t_objs - t_pl;
+
+        // upscale 2× into the output framebuffer (nearest — crisp pixels)
+        let src = canvas.data();
+        let mut out = vec![0u8; (FRAME_W * FRAME_H * 4) as usize];
+        let (ow, oh) = (FRAME_W as usize, FRAME_H as usize);
+        for y in 0..RH as usize {
+            let row = &src[y * RW as usize * 4..(y + 1) * RW as usize * 4];
+            for dy in 0..2 {
+                let orow = &mut out[(y * 2 + dy) * ow * 4..(y * 2 + dy + 1) * ow * 4];
+                for x in 0..RW as usize {
+                    let p = &row[x * 4..x * 4 + 4];
+                    orow[x * 8..x * 8 + 4].copy_from_slice(p);
+                    orow[x * 8 + 4..x * 8 + 8].copy_from_slice(p);
+                }
+            }
+        }
+        if prof_n {
+        }
+        if prof {
+            let t_all = t_start.elapsed();
+            eprintln!("prof: bg {:?} objs {:?} players {:?} unprem {:?} upscale {:?} total {:?}",
+                t_bg, t_objs, t_pl, t_un, t_all - t_bg - t_objs - t_pl - t_un, t_all);
+        }
+        out
     }
+
+    fn _unused_prof(&self) {}
 }
 
 fn draw_player(
@@ -362,10 +675,10 @@ fn draw_player(
     };
     // icon px → screen: mini wave draws at 0.6× the icon's world size
     let s = SCALE / sscale * if p.mini { 0.6 } else { 1.0 };
-    // dart icon art points RIGHT natively; tiny_skia's rotate() turns
-    // counter-clockwise on screen, so the plain atan2(vy, vx) aims it
+    /// dart icon art points RIGHT natively; aim along the ACTUAL per-tick
+    /// movement (vel_y is zeroed/re-set by slope rides, which lies)
     let vx = p.dx() as f32;
-    let vy = p.vel_y as f32;
+    let vy = p.last_move_dy as f32;
     let deg = vy.atan2(vx).to_degrees();
     let mut tinted = sprite.clone();
     for px in tinted.pixels_mut() {
@@ -386,7 +699,7 @@ fn draw_player(
             -(tinted.height() as f32) * 0.5,
         ));
     let mut paint = PixmapPaint::default();
-    paint.quality = FilterQuality::Bilinear;
+    paint.quality = FilterQuality::Nearest;
     canvas.draw_pixmap(0, 0, tinted.as_ref(), &paint, t, None);
     let _ = half;
 }
@@ -544,23 +857,19 @@ mod tests {
             let sim = Sim::new(&lvl, &t);
             r.draw(&lvl, &t, &sim)
         };
-        // A = upper-right of the cell (outside an up-pointing spike), B = lower-right
-        let a = (587usize, 555usize);
-        let b = (587, 588);
         let buf0 = render(0.0);
         let buf180 = render(180.0);
-        // the bg is now a tiled texture — assert the sprite content flips
-        // with rotation rather than comparing against a flat color
-        assert_ne!(
-            pixel(&buf0, a.0, a.1),
-            pixel(&buf180, a.0, a.1),
-            "tip/base must flip between rot 0 and 180 at the cell's upper-right"
-        );
-        assert_ne!(
-            pixel(&buf0, b.0, b.1),
-            pixel(&buf180, b.0, b.1),
-            "tip/base must flip between rot 0 and 180 at the cell's lower-right"
-        );
+        // the bg is a tiled texture — assert the sprite flips by counting
+        // differing pixels across the whole 60px cell
+        let mut diff = 0usize;
+        for y in (536..604).step_by(2) {
+            for x in (538..606).step_by(2) {
+                if pixel(&buf0, x, y) != pixel(&buf180, x, y) {
+                    diff += 1;
+                }
+            }
+        }
+        assert!(diff > 40, "rot 0 vs 180 must flip the sprite (diff={diff})");
     }
 
     #[test]

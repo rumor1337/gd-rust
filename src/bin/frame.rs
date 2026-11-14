@@ -33,7 +33,15 @@ fn main() {
         let (p1, p2) = pb.step();
         sim.step_single(InputState { hold: p2, hold_p2: p1 });
     }
-    let rgba = r.draw(&level, &table, &sim);
+    let n: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(1);
+    let t0 = std::time::Instant::now();
+    let mut rgba = Vec::new();
+    for _ in 0..n {
+        rgba = r.draw(&level, &table, &sim);
+    }
+    let per = t0.elapsed().as_secs_f64() * 1000.0 / n as f64;
+    println!("render avg {per:.1} ms/frame over {n}");
+
     let mut pm = Pixmap::from_vec(
         rgba,
         tiny_skia::IntSize::from_wh(gdrust::render::FRAME_W, gdrust::render::FRAME_H).unwrap(),

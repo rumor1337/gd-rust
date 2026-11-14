@@ -233,6 +233,7 @@ impl Sim {
                     _ => {}
                 }
             }
+            let prev_y = self.players[pi].y;
             self.players[pi].substep();
             if self.resolve_collisions(pi) || self.interact(pi) {
                 if self.state == RunState::Dead {
@@ -242,6 +243,10 @@ impl Sim {
                     return;
                 }
             }
+            // actual movement this tick (post-collision) — drives the wave
+            // icon tilt, which must follow the real travel direction even
+            // while slope-riding (vel_y is zeroed/re-set by the rides)
+            self.players[pi].last_move_dy = self.players[pi].y - prev_y;
         }
         for i in 0..self.players.len() {
             self.prev_hold[i] = if i == 0 { input.hold } else { input.hold_p2 };
