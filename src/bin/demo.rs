@@ -42,6 +42,8 @@ fn main() {
     .expect("window");
     window.set_target_fps(60);
     let mut fb = vec![0u32; FRAME_W as usize * FRAME_H as usize];
+    let mut last = std::time::Instant::now();
+    let mut fps_smooth = 60.0f32;
 
     while window.is_open() {
         // 4 sim ticks per displayed frame = 240Hz at 60fps (step_single =
@@ -73,6 +75,12 @@ fn main() {
         }
 
         let rgba = renderer.draw(&level, &table, &sim);
+        let dt = last.elapsed().as_secs_f32();
+        last = std::time::Instant::now();
+        if dt > 0.0 {
+            fps_smooth = fps_smooth * 0.9 + (1.0 / dt) * 0.1;
+        }
+        renderer.set_fps(fps_smooth as u32);
         for (i, px) in fb.iter_mut().enumerate() {
             let b = rgba[i * 4];
             let g = rgba[i * 4 + 1];

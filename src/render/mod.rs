@@ -33,12 +33,18 @@ pub struct Renderer {
     store: SpriteStore,
     /// lazily-decoded tiled background (png name, texture)
     bg: Option<(String, Pixmap)>,
+    fps: Option<u32>,
 }
 
 impl Renderer {
     /// Missing sheets degrade to hitbox-outline rendering (see SpriteStore::load).
     pub fn new(assets_dir: &std::path::Path) -> Renderer {
-        Renderer { store: SpriteStore::load(assets_dir), bg: None }
+        Renderer { store: SpriteStore::load(assets_dir), bg: None, fps: None }
+    }
+
+    /// Show an fps counter (3x5 digits, top-right).
+    pub fn set_fps(&mut self, fps: u32) {
+        self.fps = Some(fps);
     }
 
     /// Render one frame following player 0. Returns straight-alpha RGBA,
@@ -58,13 +64,14 @@ impl Renderer {
         let camy = py.clamp(210.0, 270.0);
 
         // background: level bg channel (id 1000), dark blue fallback
-        let bg = level
+        let bg_rgb = level
             .header
             .channels
             .iter()
             .find(|c| c.id == BG_CHANNEL)
-            .map(|c| Color::from_rgba8(c.r, c.g, c.b, 255))
-            .unwrap_or_else(|| Color::from_rgba8(25, 50, 100, 255));
+            .map(|c| (c.r, c.g, c.b))
+            .unwrap_or((25, 50, 100));
+        let bg = Color::from_rgba8(bg_rgb.0, bg_rgb.1, bg_rgb.2, 255);
         canvas.fill(bg);
 
 let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
@@ -83,9 +90,24 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
             .unwrap_or(1);
         let bg_name = format!("game_bg_{bg_id:02}_001-uhd.png");
         if self.bg.as_ref().map(|(n, _)| n != &bg_name).unwrap_or(true) {
-            self.bg = Pixmap::load_png(self.store.dir().join(&bg_name))
-                .ok()
-                .map(|p| (bg_name, p));
+            // GD paints texture × bg-channel color (kS38 ch 1000; GRIEF's is
+            // black, hence the dark look)
+            let tint = bg_rgb;
+            let tiled = Pixmap::load_png(self.store.dir().join(&bg_name)).ok().map(|mut p| {
+                if tint != (255, 255, 255) {
+                    for px in p.pixels_mut() {
+                        *px = tiny_skia::PremultipliedColorU8::from_rgba(
+                            (px.red() as u16 * tint.0 as u16 / 255) as u8,
+                            (px.green() as u16 * tint.1 as u16 / 255) as u8,
+                            (px.blue() as u16 * tint.2 as u16 / 255) as u8,
+                            px.alpha(),
+                        )
+                        .unwrap_or(*px);
+                    }
+                }
+                p
+            });
+            self.bg = tiled.map(|p| (bg_name, p));
         }
         if let Some((_, tex)) = &self.bg {
             let s = 512.0 * SCALE / tex.width() as f32;
@@ -119,11 +141,14 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
         // id → texture name / hitbox, built once per frame (levels repeat ids heavily)
         let mut by_tex: Vec<Option<&str>> = vec![None; 8192];
         let mut by_hb: Vec<Option<&[f64]>> = vec![None; 8192];
+        let mut is_deco: Vec<bool> = vec![false; 8192];
         for (k, def) in &table.objects {
             if let Ok(id) = k.parse::<usize>() {
                 if id < 8192 {
                     by_tex[id] = def.texture_name.as_deref();
                     by_hb[id] = def.hitbox.as_deref();
+                    // GD object_type 7 = decoration: drawn behind gameplay
+                    is_deco[id] = def.object_type == 7;
                 }
             }
         }
@@ -131,7 +156,13 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
         let mut sprite_paint = PixmapPaint::default();
         sprite_paint.quality = FilterQuality::Bilinear;
 
+        // decorations first, gameplay on top (GD layering)
+        for deco_pass in [true, false] {
         for obj in &level.objects {
+            if is_deco[obj.id as usize & 8191] != deco_pass {
+                continue;
+            }
+
             let wx = obj.x;
             let wy = obj.y + 105.0;
             if wx < camx - CULL_PAD || wx > camx + view_w + CULL_PAD {
@@ -222,6 +253,7 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
                 }
             }
         }
+        }
 
         // players: the GD dart icon tinted per player (green p0, red p1)
         for (i, p) in sim.players.iter().enumerate() {
@@ -232,6 +264,57 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
             };
             let (cx, cy) = to_screen(p.x as f32, p.y as f32);
             draw_player(&mut canvas, &mut self.store, p, col, cx, cy);
+        }
+
+        // fps counter (3x5 digits, top-right, black shadow)
+        if let Some(fps) = self.fps {
+            const D: [[u8; 5]; 10] = [
+                [0b111, 0b101, 0b101, 0b101, 0b111],
+                [0b010, 0b110, 0b010, 0b010, 0b111],
+                [0b111, 0b001, 0b111, 0b100, 0b111],
+                [0b111, 0b001, 0b111, 0b001, 0b111],
+                [0b101, 0b101, 0b111, 0b001, 0b001],
+                [0b111, 0b100, 0b111, 0b001, 0b111],
+                [0b111, 0b100, 0b111, 0b101, 0b111],
+                [0b111, 0b001, 0b001, 0b010, 0b010],
+                [0b111, 0b101, 0b111, 0b101, 0b111],
+                [0b111, 0b101, 0b111, 0b001, 0b111],
+            ];
+            let digits: Vec<u8> = fps
+                .to_string()
+                .bytes()
+                .map(|b| (b - b'0') as u8)
+                .collect();
+            let cell = 2.0f32;
+            let gw = digits.len() as f32 * (3.0 * cell + cell) - cell;
+            let mut x0 = FRAME_W as f32 - gw - 10.0;
+            let y0 = 10.0;
+            let mut paint = Paint::default();
+            paint.anti_alias = false;
+            for (shadow, col) in
+                [(1.0, Color::from_rgba8(0, 0, 0, 200)), (0.0, Color::from_rgba8(255, 255, 255, 255))]
+            {
+                let mut x = x0 + shadow;
+                for d in &digits {
+                    for (row, bits) in D[*d as usize].iter().enumerate() {
+                        for col_i in 0..3 {
+                            if bits & (1 << (2 - col_i)) != 0 {
+                                if let Some(r) = Rect::from_xywh(
+                                    x + col_i as f32 * cell,
+                                    y0 + shadow + row as f32 * cell,
+                                    cell,
+                                    cell,
+                                ) {
+                                    paint.shader = tiny_skia::Shader::SolidColor(col);
+                                    canvas.fill_rect(r, &paint, Transform::identity(), None);
+                                }
+                            }
+                        }
+                    }
+                    x += 4.0 * cell;
+                }
+            }
+            let _ = x0;
         }
 
         unpremultiply(&canvas)
@@ -255,9 +338,10 @@ fn draw_player(
     };
     // icon px → screen: mini wave draws at 0.6× the icon's world size
     let s = SCALE / sscale * if p.mini { 0.6 } else { 1.0 };
+    /// dart icon art points UP natively; velocity angle is measured from +x
     let vx = p.dx() as f32;
     let vy = p.vel_y as f32;
-    let deg = vy.atan2(vx).to_degrees();
+    let deg = vy.atan2(vx).to_degrees() + 90.0;
     let mut tinted = sprite.clone();
     for px in tinted.pixels_mut() {
         let c = px.demultiply();
