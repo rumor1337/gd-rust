@@ -49,20 +49,15 @@ fn main() {
         // 4 sim ticks per displayed frame = 240Hz at 60fps (step_single =
         // one 240Hz tick; the macro advances one frame per tick)
         for _ in 0..4 {
-            // dead: brief pause, then a fresh attempt with the macro rewound
+            // death: restart immediately (the sim's internal respawn would
+            // otherwise resume the macro at the death frame, not frame 0)
             if sim.state == gdrust::sim::RunState::Dead {
-                if sim.dead_frames >= gdrust::sim::DEATH_PAUSE_FRAMES * 4 {
-                    sim.reset();
-                    pb = Playback::new(m.clone());
-                }
+                sim.reset();
+                pb = Playback::new(m.clone());
             }
-            if sim.state != gdrust::sim::RunState::Dead {
-                let (p1, p2) = pb.step();
-                // SWAP wiring: macro p2 (active player) drives sim p0
-                sim.step_single(InputState { hold: p2, hold_p2: p1 });
-            } else {
-                sim.step_single(InputState { hold: false, hold_p2: false });
-            }
+            let (p1, p2) = pb.step();
+            // SWAP wiring: macro p2 (active player) drives sim p0
+            sim.step_single(InputState { hold: p2, hold_p2: p1 });
         }
         if window.is_key_pressed(Key::R, minifb::KeyRepeat::No) {
             sim.reset();
