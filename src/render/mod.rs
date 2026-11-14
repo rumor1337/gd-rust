@@ -575,58 +575,76 @@ let to_screen = |wx: f32, wy: f32| -> (f32, f32) {
             draw_player(&mut canvas, &mut self.store, p, col, cx, cy);
         }
 
-        // fps counter (3x5 digits, top-right, black shadow)
+        // hud: progress bar + %, fps, death overlay (attempt text + effect)
+        let prog = sim.progress();
+        let bar_w = (RW as f32 * 0.6) as f32;
+        let mut paint = Paint::default();
+        paint.anti_alias = false;
+        if let Some(r) = Rect::from_xywh((RW as f32 - bar_w) / 2.0, 4.0, bar_w, 3.0) {
+            paint.shader = tiny_skia::Shader::SolidColor(Color::from_rgba8(255, 255, 255, 40));
+            canvas.fill_rect(r, &paint, Transform::identity(), None);
+        }
+        if let Some(r) = Rect::from_xywh(
+            (RW as f32 - bar_w) / 2.0,
+            4.0,
+            bar_w * (prog / 100.0).clamp(0.0, 1.0) as f32,
+            3.0,
+        ) {
+            paint.shader = tiny_skia::Shader::SolidColor(Color::from_rgba8(0, 255, 60, 220));
+            canvas.fill_rect(r, &paint, Transform::identity(), None);
+        }
+        let pct = format!("{:.2}%", prog);
+        draw_text(&mut canvas, &pct, RW as f32 - 8.0, 12.0, 2.0, Align::Right, (255, 255, 255));
         if let Some(fps) = self.fps {
-            const D: [[u8; 5]; 10] = [
-                [0b111, 0b101, 0b101, 0b101, 0b111],
-                [0b010, 0b110, 0b010, 0b010, 0b111],
-                [0b111, 0b001, 0b111, 0b100, 0b111],
-                [0b111, 0b001, 0b111, 0b001, 0b111],
-                [0b101, 0b101, 0b111, 0b001, 0b001],
-                [0b111, 0b100, 0b111, 0b001, 0b111],
-                [0b111, 0b100, 0b111, 0b101, 0b111],
-                [0b111, 0b001, 0b001, 0b010, 0b010],
-                [0b111, 0b101, 0b111, 0b101, 0b111],
-                [0b111, 0b101, 0b111, 0b001, 0b111],
-            ];
-            let digits: Vec<u8> = fps
-                .to_string()
-                .bytes()
-                .map(|b| (b - b'0') as u8)
-                .collect();
-            let cell = 2.0f32;
-            let gw = digits.len() as f32 * (3.0 * cell + cell) - cell;
-            let mut x0 = RW as f32 - gw - 10.0;
-            let y0 = 10.0;
-            let mut paint = Paint::default();
-            paint.anti_alias = false;
-            for (shadow, col) in
-                [(1.0, Color::from_rgba8(0, 0, 0, 200)), (0.0, Color::from_rgba8(255, 255, 255, 255))]
-            {
-                let mut x = x0 + shadow;
-                for d in &digits {
-                    for (row, bits) in D[*d as usize].iter().enumerate() {
-                        for col_i in 0..3 {
-                            if bits & (1 << (2 - col_i)) != 0 {
-                                if let Some(r) = Rect::from_xywh(
-                                    x + col_i as f32 * cell,
-                                    y0 + shadow + row as f32 * cell,
-                                    cell,
-                                    cell,
-                                ) {
-                                    paint.shader = tiny_skia::Shader::SolidColor(col);
-                                    canvas.fill_rect(r, &paint, Transform::identity(), None);
-                                }
-                            }
-                        }
-                    }
-                    x += 4.0 * cell;
+            draw_text(
+                &mut canvas,
+                &fps.to_string(),
+                RW as f32 - 8.0,
+                4.0,
+                2.0,
+                Align::Right,
+                (200, 200, 200),
+            );
+        }
+        if sim.state == crate::sim::RunState::Dead {
+            // GD death overlay: attempt text + expanding burst in player color
+            let p = &sim.players[0];
+            let (dx, dy) = to_screen(p.x as f32, p.y as f32);
+            let prog_d = (sim.dead_frames as f32 / 120.0).clamp(0.0, 1.0);
+            let fade = (1.0 - prog_d) as u8;
+            let (cr, cg, cb) = if p.grav_flip { (255, 45, 45) } else { (0, 255, 60) };
+            let ring_r = 6.0 + prog_d * 90.0;
+            let mut ring = Paint::default();
+            ring.shader =
+                tiny_skia::Shader::SolidColor(Color::from_rgba8(cr, cg, cb, (fade / 2).max(1)));
+            let stroke = Stroke { width: 3.0, ..Default::default() };
+            if let Some(path) = tiny_skia::PathBuilder::from_circle(dx, dy, ring_r) {
+                canvas.stroke_path(&path, &ring, &stroke, Transform::identity(), None);
+            }
+            for i in 0..14 {
+                let ang = (i as f32 * 25.7 + sim.attempt as f32 * 13.1).to_radians();
+                let dist = 10.0 + prog_d * (30.0 + (i % 5) as f32 * 14.0);
+                let px = dx + ang.cos() * dist;
+                let py = dy + ang.sin() * dist;
+                paint.shader = tiny_skia::Shader::SolidColor(Color::from_rgba8(cr, cg, cb, fade));
+                if let Some(r) = Rect::from_xywh(px - 1.5, py - 1.5, 3.0, 3.0) {
+                    canvas.fill_rect(r, &paint, Transform::identity(), None);
                 }
             }
-            let _ = x0;
+            let att = format!("ATTEMPT {}", sim.attempt);
+            draw_text(
+                &mut canvas,
+                &att,
+                RW as f32 / 2.0,
+                RH as f32 * 0.3,
+                3.0,
+                Align::Center,
+                (255, 255, 255),
+            );
         }
 
         let t_pl = t_start.elapsed() - t_bg - t_objs;
+
         unpremultiply(&canvas);
         let t_un = t_start.elapsed() - t_bg - t_objs - t_pl;
 
@@ -750,6 +768,84 @@ fn square_path(half: f32, cx: f32, cy: f32, deg: f32) -> (Option<tiny_skia::Path
 }
 
 /// tiny-skia stores premultiplied RGBA; ffmpeg rawvideo wants straight alpha.
+#[derive(Clone, Copy, PartialEq)]
+enum Align {
+    Left,
+    Right,
+    Center,
+}
+
+/// 3x5 glyphs for 0-9, A T E M P % and space
+fn glyph(ch: u8) -> Option<[u8; 5]> {
+    Some(match ch {
+        b'0' => [0b111, 0b101, 0b101, 0b101, 0b111],
+        b'1' => [0b010, 0b110, 0b010, 0b010, 0b111],
+        b'2' => [0b111, 0b001, 0b111, 0b100, 0b111],
+        b'3' => [0b111, 0b001, 0b111, 0b001, 0b111],
+        b'4' => [0b101, 0b101, 0b111, 0b001, 0b001],
+        b'5' => [0b111, 0b100, 0b111, 0b001, 0b111],
+        b'6' => [0b111, 0b100, 0b111, 0b101, 0b111],
+        b'7' => [0b111, 0b001, 0b001, 0b010, 0b010],
+        b'8' => [0b111, 0b101, 0b111, 0b101, 0b111],
+        b'9' => [0b111, 0b101, 0b111, 0b001, 0b111],
+        b'A' => [0b111, 0b101, 0b111, 0b101, 0b101],
+        b'T' => [0b111, 0b010, 0b010, 0b010, 0b010],
+        b'E' => [0b111, 0b100, 0b111, 0b100, 0b111],
+        b'M' => [0b101, 0b111, 0b111, 0b101, 0b101],
+        b'P' => [0b111, 0b101, 0b111, 0b100, 0b100],
+        b'%' => [0b101, 0b001, 0b010, 0b100, 0b101],
+        b'.' => [0b000, 0b000, 0b000, 0b000, 0b010],
+        b' ' => [0b000, 0b000, 0b000, 0b000, 0b000],
+        _ => return None,
+    })
+}
+
+/// draw `text` with the 3x5 font; (x, y) is the anchor per `align`
+fn draw_text(
+    canvas: &mut Pixmap,
+    text: &str,
+    x: f32,
+    y: f32,
+    cell: f32,
+    align: Align,
+    col: (u8, u8, u8),
+) {
+    let gw: f32 = text.len() as f32 * (4.0 * cell) - cell;
+    let x0 = match align {
+        Align::Left => x,
+        Align::Right => x - gw,
+        Align::Center => x - gw / 2.0,
+    };
+    let mut paint = Paint::default();
+    paint.anti_alias = false;
+    for (shadow, col) in [
+        (1.0, Color::from_rgba8(0, 0, 0, 200)),
+        (0.0, Color::from_rgba8(col.0, col.1, col.2, 255)),
+    ] {
+        let mut cx = x0 + shadow;
+        for ch in text.bytes() {
+            if let Some(rows) = glyph(ch.to_ascii_uppercase()) {
+                for (row, bits) in rows.iter().enumerate() {
+                    for col_i in 0..3 {
+                        if bits & (1 << (2 - col_i)) != 0 {
+                            if let Some(r) = Rect::from_xywh(
+                                cx + col_i as f32 * cell,
+                                y + shadow + row as f32 * cell,
+                                cell,
+                                cell,
+                            ) {
+                                paint.shader = tiny_skia::Shader::SolidColor(col);
+                                canvas.fill_rect(r, &paint, Transform::identity(), None);
+                            }
+                        }
+                    }
+                }
+            }
+            cx += 4.0 * cell;
+        }
+    }
+}
+
 fn unpremultiply(pm: &Pixmap) -> Vec<u8> {
     let mut out = pm.data().to_vec();
     for px in out.chunks_exact_mut(4) {
