@@ -1,8 +1,8 @@
 //! Where the player's own Geometry Dash art is (RobTop's, never bundled).
 //!
-//! Order: `DEMO_ASSETS`, then the folder remembered from an earlier run,
-//! then Steam's default install on Windows. Linux and macOS ask once with
-//! a native folder picker and remember the answer.
+//! Order: `--assets <dir>`, `DEMO_ASSETS`, the folder remembered from an
+//! earlier run, Steam's default install (Windows); else a native folder
+//! picker asks once and the answer is remembered.
 
 use std::path::{Path, PathBuf};
 
@@ -35,13 +35,26 @@ pub fn find() -> Option<PathBuf> {
     [env, saved, steam].into_iter().flatten().find_map(|d| sheets_in(&d))
 }
 
+/// `--assets <dir>` taken out of the command line: (the dir, the other args).
+pub fn split_flag(mut args: Vec<String>) -> (Option<PathBuf>, Vec<String>) {
+    let Some(i) = args.iter().position(|a| a == "--assets") else { return (None, args) };
+    args.remove(i);
+    let dir = (i < args.len()).then(|| PathBuf::from(args.remove(i)));
+    (dir, args)
+}
+
 /// The art folder, asking with a native folder picker when none is known
-/// yet (Linux / macOS; remembered for later runs). Exits if the player cancels.
+/// yet (remembered for later runs). Exits if the player cancels.
 pub fn find_or_ask() -> PathBuf {
+    if let (Some(dir), _) = split_flag(std::env::args().collect()) {
+        return sheets_in(&dir).unwrap_or_else(|| {
+            eprintln!("--assets {}: no GJ_GameSheet-uhd.plist there (give the Geometry Dash folder)", dir.display());
+            std::process::exit(1);
+        });
+    }
     if let Some(d) = find() {
         return d;
     }
-    #[cfg(not(windows))]
     loop {
         let picked = rfd::FileDialog::new()
             .set_title("Choose your Geometry Dash folder (the game's art is read from it)")
@@ -81,5 +94,13 @@ mod tests {
         assert_eq!(sheets_in(&root.join("plain")), Some(root.join("plain")));
         assert_eq!(sheets_in(&root), None);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn assets_flag_is_taken_out_of_the_args() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(split_flag(a(&["demo", "--assets", "C:\\GD", "11"])), (Some(PathBuf::from("C:\\GD")), a(&["demo", "11"])));
+        assert_eq!(split_flag(a(&["demo", "11"])), (None, a(&["demo", "11"])));
+        assert_eq!(split_flag(a(&["demo", "--assets"])), (None, a(&["demo"])));
     }
 }

@@ -16,6 +16,8 @@ rodio = "0.20"
 opt-level = 3
 lto = true
 
-# native folder picker on first run (Windows uses Steam's default path)
-[target.'cfg(not(windows))'.dependencies]
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+# native folder picker on first run
+[dependencies.rfd]
+version = "0.15"
+default-features = false
+features = ["xdg-portal", "async-std"]

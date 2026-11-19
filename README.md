@@ -13,16 +13,16 @@ Or build it: `cargo run --release --bin demo` (Linux needs `libasound2-dev`).
 ## Requirements
 
 - Geometry Dash installed. The demo draws with the game's own art and plays its
-  songs; nothing of RobTop's is bundled. On first run Linux and macOS ask for the
-  Geometry Dash folder (remembered after); Windows uses Steam's default folder.
-  `DEMO_ASSETS=<dir>` overrides both.
+  songs; nothing of RobTop's is bundled. It looks in `--assets <dir>`, then
+  `DEMO_ASSETS`, then the folder picked last time, then (Windows) Steam's default
+  folder. If none has the game, a folder picker asks once and remembers it.
 - Python 3, to download levels and their songs (`tools/fetch_level.py`).
 - FFmpeg only for `record` and `live`. The demo plays audio itself.
 
 ## Demo
 
 ```sh
-demo [level id]   # default 149992717 (GRIEF)
+demo [level id] [--assets <GD folder>]   # default 149992717 (GRIEF)
 ```
 
 A missing level is downloaded with its song (`tools/fetch_level.py`). It plays a

@@ -17,7 +17,7 @@
 //! the left mouse button; deaths restart). Insert or Escape closes it.
 //!
 //! Art from the player's Geometry Dash install (see gdrust::assets: asked
-//! for once on Linux/macOS, Steam's folder on Windows; DEMO_ASSETS overrides),
+//! for once with a folder picker if not found; --assets <dir> / DEMO_ASSETS override),
 //! macro p2 drives sim p0 (SWAP wiring, same as calibrate). R restarts the
 //! attempt, Escape/Q quits. Uncapped frame rate; the sim advances 240Hz
 //! ticks by wall-clock time, and prints the run time on completion. Progress/attempt live in the window title.
@@ -256,7 +256,7 @@ fn main() {
         Some(d) => Box::leak(d.to_string_lossy().into_owned().into_boxed_str()),
         None => env!("CARGO_MANIFEST_DIR"),
     };
-    let args: Vec<String> = std::env::args().collect();
+    let (_, args) = gdrust::assets::split_flag(std::env::args().collect());
     // the player's own Geometry Dash art (RobTop's, never shipped): asked
     // for on the first run, before anything slow happens
     let assets = gdrust::assets::find_or_ask();
