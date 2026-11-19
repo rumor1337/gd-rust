@@ -1,5 +1,5 @@
 // Headless frame dump: render GRIEF at a chosen sim tick to /tmp/opencode/frame.png
-// using the real gd-clone assets, for visual inspection.
+// using the player's Geometry Dash art (gdrust::assets), for visual inspection.
 // usage: frame [tick] [outdir]
 use gdrust::bot::gdr2::parse_gdr2;
 use gdrust::bot::Playback;
@@ -38,7 +38,7 @@ fn main() {
             m
         })
     };
-    let assets = format!("{}/Documents/gd-clone", std::env::var("HOME").unwrap());
+    let assets = gdrust::assets::find_or_ask();
     let mut r = Renderer::new(std::path::Path::new(&assets));
 
     let mut sim = Sim::new(&level, &table);

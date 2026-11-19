@@ -14,12 +14,13 @@ usage: objdump -d -M intel --no-show-raw-insn GeometryDash.exe > exe.asm
        python3 -I tools/gd_frames.py GeometryDash.exe exe.asm data/objects.json
 """
 import json
+import os
 import re
 import sys
 
 MAP_INDEX = 'call   0x1402d37f0'  # std::map<int, string>::operator[] in this exe
 RDATA_VA, RDATA_OFF, RDATA_LEN = 0x1406CA000, 0x6C8600, 0x22D794
-SHEET_DIR = '/home/feng/Documents/gd-clone/Resources'
+SHEET_DIR = os.environ.get('GD_RESOURCES') or sys.exit('set GD_RESOURCES to Geometry Dash\'s Resources folder')
 
 
 def frames(exe_path, asm_path):

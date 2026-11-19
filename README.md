@@ -3,16 +3,26 @@
 A Geometry Dash engine in Rust: 240 Hz physics, a CPU renderer that matches the
 real game's look, and a bot that solves levels on its own.
 
+## Install
+
+Download a package from **Releases** (Linux, macOS, Windows), unpack it and run `demo`.
+macOS builds are unsigned: run `xattr -dr com.apple.quarantine gd-rust-macos-arm64` once.
+
+Or build it: `cargo run --release --bin demo` (Linux needs `libasound2-dev`).
+
 ## Requirements
 
-- Rust (stable), `ffmpeg` / `ffplay` for video and music, `python3` to download levels
-- Geometry Dash's own art. Nothing of RobTop's is bundled. Linux reads
-  `~/Documents/gd-clone`, Windows reads the Steam install; `DEMO_ASSETS=<dir>` overrides.
+- Geometry Dash installed. The demo draws with the game's own art and plays its
+  songs; nothing of RobTop's is bundled. On first run Linux and macOS ask for the
+  Geometry Dash folder (remembered after); Windows uses Steam's default folder.
+  `DEMO_ASSETS=<dir>` overrides both.
+- Python 3, to download levels and their songs (`tools/fetch_level.py`).
+- FFmpeg only for `record` and `live`. The demo plays audio itself.
 
 ## Demo
 
 ```sh
-cargo run --release --bin demo [level id]   # default 149992717 (GRIEF)
+demo [level id]   # default 149992717 (GRIEF)
 ```
 
 A missing level is downloaded with its song (`tools/fetch_level.py`). It plays a

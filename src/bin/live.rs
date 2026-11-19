@@ -8,7 +8,7 @@
 //! - `LIVE_SECONDS`: stop after this many seconds (encode tests). Unset → forever.
 //! - `TT_USERNAME`: TikTok handle whose gifts reset the run (spawns `node bridge/index.js`).
 //! - `LIVE_ROOT`: dir with levels/ data/ macros/ audio/ bridge/ (default: the crate dir).
-//! - `LIVE_ASSETS`: GD Resources dir (default ~/Documents/gd-clone).
+//! - `LIVE_ASSETS`: GD Resources dir (default: gdrust::assets::find).
 //!
 //! Pacing is wall-clock: one frame per 1/30 s. The sim, the song and the
 //! frame slot always advance together; when rendering falls behind, the last
@@ -128,8 +128,9 @@ impl Session {
 
 fn main() {
     let root = PathBuf::from(std::env::var("LIVE_ROOT").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").into()));
-    let assets = std::env::var("LIVE_ASSETS")
-        .unwrap_or_else(|_| format!("{}/Documents/gd-clone", std::env::var("HOME").unwrap_or_default()));
+    // headless (Docker): never asks; LIVE_ASSETS, else gdrust::assets::find()
+    let assets = std::env::var("LIVE_ASSETS").map(PathBuf::from).ok().or_else(gdrust::assets::find)
+        .expect("set LIVE_ASSETS to Geometry Dash's Resources folder");
     let out = match (std::env::var("TT_RTMP_URL"), std::env::var("TT_STREAM_KEY")) {
         (Ok(url), Ok(key)) if !url.is_empty() && !key.is_empty() => Some(format!("{}/{key}", url.trim_end_matches('/'))),
         _ => std::env::var("LIVE_OUT").ok().filter(|s| !s.is_empty()),

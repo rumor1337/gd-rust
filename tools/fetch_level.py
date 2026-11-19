@@ -65,9 +65,11 @@ def song_url(song_id):
     return urllib.parse.unquote(dict(zip(parts[::2], parts[1::2]))['10'])
 
 
-def main(level_id, macro_url=None, gd_dir=os.path.expanduser('~/Documents/gd-clone')):
+def main(level_id, macro_url=None, gd_dir=os.environ.get('DEMO_ASSETS', '')):
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     gmd, meta_path = f'{root}/levels/{level_id}.gmd', f'{root}/levels/{level_id}.json'
+    for d in ('levels', 'audio', 'macros'):  # a fresh release folder has none
+        os.makedirs(f'{root}/{d}', exist_ok=True)
     fields, level = parse_level_response(post('downloadGJLevel22.php', levelID=level_id))
     if not os.path.exists(gmd):
         open(gmd, 'w').write(level)
@@ -82,9 +84,12 @@ def main(level_id, macro_url=None, gd_dir=os.path.expanduser('~/Documents/gd-clo
             download(song_url(custom), f'{root}/{song}', magic=[b'ID3', b'\xff\xfb', b'\xff\xf3', b'\xff\xf2'])
     else:
         name = OFFICIAL[int(fields.get('12') or 0)] if int(fields.get('12') or 0) < len(OFFICIAL) else None
-        src = f'{gd_dir}/Resources/{name}.mp3'
-        song = f'audio/{name}.mp3' if name and os.path.exists(src) else None
-        if song and not os.path.exists(f'{root}/{song}'):
+        # official songs ship with the game: the demo plays them from GD's
+        # Resources/ by name; copied into audio/ only when DEMO_ASSETS names
+        # the install (record / live read audio/)
+        song = f'audio/{name}.mp3' if name else None
+        src = next((p for p in (f'{gd_dir}/Resources/{name}.mp3', f'{gd_dir}/{name}.mp3') if gd_dir and os.path.exists(p)), None)
+        if song and src and not os.path.exists(f'{root}/{song}'):
             shutil.copy(src, f'{root}/{song}')
     json.dump({'name': fields.get('2', str(level_id)), 'song': song}, open(meta_path, 'w'))
     if macro_url:

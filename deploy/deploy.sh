@@ -4,7 +4,7 @@
 set -euo pipefail
 host=${1:-staging}
 root=$(cd "$(dirname "$0")/.." && pwd)
-res=${GD_RESOURCES:-$HOME/Documents/gd-clone/Resources}
+res=${GD_RESOURCES:?set GD_RESOURCES to Geometry Dash\'s Resources folder}
 stack=/opt/stacks/gdrust
 # out/ is written by the container user: leave its files' ownership alone
 ssh "$host" "sudo mkdir -p $stack/src $stack/assets/icons $stack/out && sudo chown 1001:1001 $stack && sudo chmod 777 $stack/out"

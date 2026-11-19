@@ -465,8 +465,8 @@ mod tests {
 
     #[test]
     fn parses_gd_robot_animation() {
-        let p = std::path::Path::new(env!("HOME")).join("Documents/gd-clone/Resources/Robot_AnimDesc.plist");
-        let Ok(text) = std::fs::read_to_string(p) else { return }; // assets not on this machine
+        let Some(dir) = crate::assets::find() else { return }; // no GD install on this machine
+        let Ok(text) = std::fs::read_to_string(dir.join("Robot_AnimDesc.plist")) else { return };
         let a = parse_anims(&text).expect("anim plist");
         assert_eq!(a["run"].len(), 16);
         assert_eq!(a["jump_start"].len() + a["jump_loop"].len(), 10);

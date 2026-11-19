@@ -1,7 +1,7 @@
 // reproduce draw_player's exact transform at known angles
 use tiny_skia::{Pixmap, PixmapPaint, Transform};
 fn main() {
-    let assets = format!("{}/Documents/gd-clone", std::env::var("HOME").unwrap());
+    let assets = gdrust::assets::find_or_ask();
     let mut store = gdrust::render::atlas::SpriteStore::load(std::path::Path::new(&assets));
     let (sprite, sscale) = store.sprite_sheet("dart_01_001.png").unwrap();
     for (name, deg) in [("d0", 0.0f32), ("dplus63", 63.4), ("dminus63", -63.4)] {

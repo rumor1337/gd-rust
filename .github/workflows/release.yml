@@ -1,0 +1,65 @@
+# Push a tag like v0.1.0: builds the demo for Linux, macOS and Windows and
+# attaches the packages to a GitHub release. No game art or music is
+# packaged: players point the demo at their own Geometry Dash install.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x86_64
+            exe: demo
+          - os: macos-latest
+            name: macos-arm64
+            exe: demo
+          - os: windows-latest
+            name: windows-x86_64
+            exe: demo.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux libraries (audio, window)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libx11-dev libxkbcommon-dev libwayland-dev pkg-config
+      - name: Build
+        run: cargo build --release --bin demo
+      - name: Package
+        shell: bash
+        run: |
+          dir=gd-rust-${{ matrix.name }}
+          mkdir -p "$dir/data" "$dir/tools" "$dir/macros"
+          cp target/release/${{ matrix.exe }} "$dir/"
+          cp data/objects.json "$dir/data/"
+          cp tools/fetch_level.py "$dir/tools/"
+          cp macros/*.gdr2 macros/*.gdr macros/*.auto.json "$dir/macros/" 2>/dev/null || true
+          cp README.md "$dir/"
+          if [ "$RUNNER_OS" = Windows ]; then 7z a "$dir.zip" "$dir" >/dev/null; else tar czf "$dir.tar.gz" "$dir"; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: gd-rust-${{ matrix.name }}.*
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: gd-rust-*
+          generate_release_notes: true

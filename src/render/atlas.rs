@@ -65,7 +65,7 @@ impl SpriteStore {
     /// hitbox outlines instead of failing.
     pub fn load(dir: &Path) -> SpriteStore {
         // a full game install keeps sheets under Resources/; resolve it so
-        // e.g. ~/Documents/gd-clone works directly
+        // the install folder works directly
         let resources = dir.join("Resources");
         let dir = if resources.join("GJ_GameSheet-uhd.plist").exists() {
             resources

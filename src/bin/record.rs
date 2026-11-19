@@ -51,7 +51,7 @@ fn main() {
             (level, m, format!("{manifest}/audio/482872.mp3"))
         }
     };
-    let assets = format!("{}/Documents/gd-clone", std::env::var("HOME").unwrap());
+    let assets = gdrust::assets::find_or_ask();
     let mut renderer = Renderer::new(std::path::Path::new(&assets));
 
     let video = format!("{out}.video.mp4");
