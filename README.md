@@ -31,7 +31,7 @@ solve, which is cached in `macros/<id>.auto.json`.
 
 | Key | Action |
 |---|---|
-| Insert | menu: type a level ID, Enter loads it, Tab switches Auto / Manual |
+| Insert, or M+E together | menu: type a level ID, Enter loads it, Tab switches Auto / Manual |
 | Space / Up / W / mouse | jump (Manual mode) |
 | R | restart |
 | Q / Esc | quit |

@@ -12,9 +12,9 @@
 //! while the current level keeps playing, then the window switches to it.
 //! A level the solver can't finish is reported and not switched to.
 //!
-//! Insert opens a menu in the window: type a level id and Enter to load it,
+//! Insert (or M+E together) opens a menu in the window: type a level id and Enter to load it,
 //! Tab switches Auto (the macro plays) / Manual (you play: Space, Up, W or
-//! the left mouse button; deaths restart). Insert or Escape closes it.
+//! the left mouse button; deaths restart). Insert, M+E or Escape closes it.
 //!
 //! Art from the player's Geometry Dash install (see gdrust::assets: asked
 //! for once with a folder picker if not found; --assets <dir> / DEMO_ASSETS override),
@@ -304,7 +304,7 @@ fn main() {
         std::thread::spawn(move || {
             let table = ObjectTable::load(std::path::Path::new(&format!("{manifest}/data/objects.json"))).expect("object table");
             let set = |s: String| *status.lock().unwrap_or_else(|e| e.into_inner()) = s;
-            println!("type a level id (+ optional macro url) and Enter to queue it, or press Insert in the window");
+            println!("type a level id (+ optional macro url) and Enter to queue it, or press Insert (or M+E) in the window");
             for (line, manual) in req_rx {
                 let mut words = line.split_whitespace();
                 let Some(id) = words.next().and_then(|w| w.parse::<u32>().ok()) else {
@@ -449,7 +449,10 @@ fn main() {
         }
         let menu_was_open = menu.is_some();
         let mut restart = false;
-        if window.is_key_pressed(Key::Insert, minifb::KeyRepeat::No) {
+        // M+E together does the same, for keyboards without Insert (60%)
+        let pressed = |k| window.is_key_pressed(k, minifb::KeyRepeat::No);
+        let combo = window.is_key_down(Key::M) && window.is_key_down(Key::E) && (pressed(Key::M) || pressed(Key::E));
+        if pressed(Key::Insert) || combo {
             menu = if menu_was_open { None } else { Some(String::new()) };
         }
         if let Some(code) = menu.as_mut() {
@@ -521,7 +524,7 @@ fn main() {
             vec![
                 format!("Level ID: {code}_"),
                 format!("Mode: {} (Tab)", if manual { "Manual" } else { "Auto" }),
-                if next.is_empty() { "Enter: load   Insert: close".to_string() } else { next.clone() },
+                if next.is_empty() { "Enter: load   Insert / M+E: close".to_string() } else { next.clone() },
             ]
         }));
         // draw this frame on a worker while the window shows the last one:
@@ -547,7 +550,7 @@ fn main() {
         }
         let t_title = std::time::Instant::now();
         window.set_title(&format!(
-            "{name} — {} — attempt {} — {:.2}% — x {:.0}{}  [Insert menu, R restart, Q quit]",
+            "{name} — {} — attempt {} — {:.2}% — x {:.0}{}  [Insert or M+E menu, R restart, Q quit]",
             if manual { "manual" } else { "auto" },
             sim.attempt,
             sim.progress(),
