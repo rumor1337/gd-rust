@@ -22,6 +22,21 @@ use std::collections::HashMap;
 const D: usize = 4;
 /// beam widths: the first, then wider retries after the whole beam died
 const WIDTHS: [usize; 4] = [64, 256, 1024, 4096];
+/// bytes all live sim copies may take (beam, its children, checkpoints):
+/// wide retries on big levels otherwise ran machines out of memory
+/// (GRIEF's sim is ~200 KB mid-level: 4096 wide x 11 copies = 9 GB).
+/// shortcut: fixed, not sized from the machine's free RAM.
+const MEM_BUDGET: usize = 1 << 30;
+/// checkpoints kept (retry n restarts n+1 back)
+const KEEP_CHECKPOINTS: usize = 8;
+
+/// Beam width that keeps every live sim copy within MEM_BUDGET: the beam,
+/// its children (one per action) and the checkpoints, each `sim_bytes`.
+fn capped_width(want: usize, sim_bytes: usize, acts: usize) -> usize {
+    let copies = 1 + acts + KEEP_CHECKPOINTS;
+    want.min(MEM_BUDGET / (sim_bytes.max(1) * copies)).max(8)
+}
+
 /// retries before giving up; past the widths list they stay at the widest
 /// and only reach further back
 const RETRIES: usize = 7;
@@ -65,7 +80,7 @@ pub fn solve(level: &Level, table: &ObjectTable, mut progress: impl FnMut(f64)) 
         }
         if layer % CHECKPOINT == 0 {
             checkpoints.push(beam.clone());
-            if checkpoints.len() > 8 {
+            if checkpoints.len() > KEEP_CHECKPOINTS {
                 checkpoints.remove(0);
             }
         }
@@ -130,7 +145,9 @@ pub fn solve(level: &Level, table: &ObjectTable, mut progress: impl FnMut(f64)) 
                 merged.insert(k, g);
             }
         }
-        let kept = select(merged.into_values().collect(), WIDTHS[tries.min(WIDTHS.len() - 1)]);
+        let sim_bytes = merged.values().next().map_or(0, |c| c.sim.heap_bytes());
+        let width = capped_width(WIDTHS[tries.min(WIDTHS.len() - 1)], sim_bytes, acts.len());
+        let kept = select(merged.into_values().collect(), width);
         if kept.is_empty() {
             // the whole beam died (or left the route): retry wider from further back each time
             // (the re-run re-adds the later checkpoints, so a fixed "two
@@ -583,6 +600,14 @@ fn play_out(mut sim: Sim, done: u64, m: &Macro) -> Option<Sim> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn beam_width_shrinks_to_fit_the_memory_budget() {
+        assert_eq!(capped_width(64, 10_000, 2), 64); // small sims: as asked
+        let w = capped_width(4096, 200_000, 2); // GRIEF-sized sims
+        assert!(w < 4096 && w * 200_000 * (3 + KEEP_CHECKPOINTS) <= MEM_BUDGET, "{w}");
+        assert_eq!(capped_width(4096, usize::MAX / 64, 4), 8); // never below 8
+    }
 
     fn level(objs: &[(u16, f32, f32)]) -> Level {
         let mut lvl = Level::default();

@@ -320,6 +320,13 @@ impl Sim {
         }
     }
 
+    /// Rough bytes one clone of this sim takes (see TriggerEngine::heap_bytes).
+    pub fn heap_bytes(&self) -> usize {
+        let sets = |v: &Vec<fx::HashSet<usize>>| v.iter().map(|s| s.capacity() * 9).sum::<usize>();
+        std::mem::size_of::<Sim>() + self.triggers.heap_bytes() + sets(&self.touching) + sets(&self.orbs_used)
+            + self.coins.capacity() * 9 + self.trails.iter().map(|t| t.capacity() * 16).sum::<usize>()
+    }
+
     pub fn progress(&self) -> f64 {
         let p = &self.players[0];
         let total = self.last_obj_x - crate::physics::SPAWN_X;

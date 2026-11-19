@@ -633,6 +633,23 @@ impl TriggerEngine {
         }
     }
 
+    /// Rough heap bytes of the per-run state (what a clone copies; the
+    /// level's own data is shared). Grows as a level toggles objects off.
+    pub fn heap_bytes(&self) -> usize {
+        fn map<K, V>(m: &HashMap<K, V>) -> usize {
+            m.capacity() * (std::mem::size_of::<(K, V)>() + 1)
+        }
+        fn set<K>(s: &HashSet<K>) -> usize {
+            s.capacity() * (std::mem::size_of::<K>() + 1)
+        }
+        fn vec<T>(v: &Vec<T>) -> usize {
+            v.capacity() * std::mem::size_of::<T>()
+        }
+        map(&self.moved) + map(&self.extra) + set(&self.off) + map(&self.group_on) + set(&self.fired) + vec(&self.runs)
+            + vec(&self.delayed) + map(&self.items) + vec(&self.armed) + set(&self.colliding) + vec(&self.held)
+            + vec(&self.events) + map(&self.alpha) + vec(&self.pulses)
+    }
+
     pub fn take_events(&mut self) -> Vec<Event> {
         std::mem::take(&mut self.events)
     }
