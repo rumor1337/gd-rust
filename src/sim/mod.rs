@@ -582,7 +582,7 @@ impl Sim {
         }
     }
 
-    /// Full restart (gift reset). Returns the attempt number before reset.
+    /// Full restart. Returns the attempt number before reset.
     pub fn reset(&mut self) -> u32 {
         let a = self.attempt;
         self.respawn();

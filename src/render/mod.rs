@@ -832,7 +832,7 @@ impl Renderer {
     }
 
     /// Render one frame following player 0. Returns opaque RGBA,
-    /// `FRAME_W * FRAME_H * 4` bytes (ready for Streamer::submit).
+    /// `FRAME_W * FRAME_H * 4` bytes.
     pub fn draw(&mut self, level: &Level, table: &ObjectTable, sim: &Sim) -> Vec<u8> {
         let prof = std::env::var("PROFILE").is_ok();
         let t_start = std::time::Instant::now();
