@@ -1,0 +1,7 @@
+target
+.git
+bridge/node_modules
+analysis
+assets
+*.png
+*.mp4

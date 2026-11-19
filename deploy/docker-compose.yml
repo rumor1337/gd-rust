@@ -1,0 +1,18 @@
+# Dockhand stack (/opt/stacks/gdrust). Secrets live in .env next to this file.
+services:
+  gdrust:
+    build: ./src
+    image: gdrust:local
+    container_name: gdrust
+    restart: unless-stopped
+    env_file: .env
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      # GD sprite sheets (Resources subset), not baked into the image
+      - ./assets:/assets:ro
+      # encode-test output (LIVE_OUT=/out/...)
+      - ./out:/out
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

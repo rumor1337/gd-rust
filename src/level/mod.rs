@@ -11,6 +11,10 @@ pub struct ColorChannel {
     pub g: u8,
     pub b: u8,
     pub opacity: f32,
+    /// key 9: take the color of this channel instead (copy color)
+    pub copy: Option<u16>,
+    /// key 5: additive blending
+    pub blending: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -23,8 +27,10 @@ pub struct LevelHeader {
     pub start_mini: bool,
     /// kA11 value (flipped gravity at start)
     pub start_flip: bool,
-    /// kA10 value (2-player mode from start)
-    pub start_two_player: bool,
+    /// kA8 value (dual mode at start: a second player spawns)
+    pub start_dual: bool,
+    /// kA10 value (2-player controls: in dual each button drives one player)
+    pub two_player: bool,
     /// from base64 kA14 JSON `start-pos-index`, if present
     pub start_pos_index: u16,
     pub channels: Vec<ColorChannel>,
@@ -38,9 +44,15 @@ pub struct Level {
     pub objects: Vec<GdObject>,
     /// level id (0 when parsed from an anonymous string; set by loaders)
     pub id: u32,
+    /// unique per constructed Level: renderer caches key on it (a pointer
+    /// key breaks when a dropped level's allocation is reused)
+    pub uid: u64,
 }
 
-const CHANNEL_KEYS: [&str; 7] = ["1", "2", "3", "6", "7", "5", "8"];
+fn next_uid() -> u64 {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 
 fn channel_from_kv(pairs: &[(&str, &str)]) -> Option<ColorChannel> {
     let get = |k: &str| pairs.iter().find(|(pk, _)| *pk == k).map(|(_, v)| *v);
@@ -52,6 +64,8 @@ fn channel_from_kv(pairs: &[(&str, &str)]) -> Option<ColorChannel> {
         g: ch("2"),
         b: ch("3"),
         opacity: get("7").and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0),
+        copy: get("9").and_then(|v| v.parse::<u16>().ok()).filter(|&c| c != 0),
+        blending: get("5") == Some("1"),
     })
 }
 
@@ -82,7 +96,7 @@ fn ka_start_pos(ka: &[(String, String)]) -> u16 {
 
 impl Default for Level {
     fn default() -> Self {
-        Level { header: LevelHeader::default(), objects: Vec::new(), id: 0 }
+        Level { header: LevelHeader::default(), objects: Vec::new(), id: 0, uid: next_uid() }
     }
 }
 
@@ -133,6 +147,43 @@ pub fn parse_level(s: &str) -> Level {
         }
     }
 
+    // pre-2.0 headers (gddocs level-start.md): colors as kS29..kS37 ("1_r_2_g_3_b..." per channel)
+    // or, older still, kS1..kS6 (bg rgb, ground rgb), all comma pairs with
+    // the kA settings (Stereo Madness and other official levels, 1.x levels)
+    if !header.contains("kS38,") {
+        channels.clear();
+        ka_raw.clear();
+        let (mut bg, mut gr) = ([None; 3], [None; 3]);
+        for pair in header.split(',').collect::<Vec<_>>().chunks(2) {
+            let [k, v] = pair else { continue };
+            if k.starts_with("kA") {
+                ka_raw.push((k.to_string(), v.to_string()));
+                continue;
+            }
+            let Some(n) = k.strip_prefix("kS").and_then(|n| n.parse::<u16>().ok()) else { continue };
+            match n {
+                1..=3 => bg[n as usize - 1] = v.parse::<u8>().ok(),
+                4..=6 => gr[n as usize - 4] = v.parse::<u8>().ok(),
+                29..=37 => {
+                    let id = [1000u16, 1001, 1002, 1004, 1, 2, 3, 4, 1003][n as usize - 29].to_string();
+                    let mut kv: Vec<(&str, &str)> =
+                        v.split('_').collect::<Vec<_>>().chunks(2).filter_map(|c| (c.len() == 2).then(|| (c[0], c[1]))).collect();
+                    kv.retain(|(k, _)| *k != "6");
+                    kv.push(("6", &id));
+                    channels.extend(channel_from_kv(&kv));
+                }
+                _ => {}
+            }
+        }
+        for (id, rgb) in [(1000u16, bg), (1001, gr)] {
+            if let [Some(r), Some(g), Some(b)] = rgb {
+                if !channels.iter().any(|c| c.id == id) {
+                    channels.push(ColorChannel { id, r, g, b, opacity: 1.0, copy: None, blending: false });
+                }
+            }
+        }
+    }
+
     let get_ka = |k: &str| {
         ka_raw
             .iter()
@@ -145,7 +196,8 @@ pub fn parse_level(s: &str) -> Level {
         start_gamemode: get_ka("kA2"),
         start_mini: get_ka("kA3") == 1,
         start_flip: get_ka("kA11") == 1,
-        start_two_player: get_ka("kA10") == 1,
+        start_dual: get_ka("kA8") == 1,
+        two_player: get_ka("kA10") == 1,
         start_pos_index: ka_start_pos(&ka_raw),
         channels,
         ka: ka_raw,
@@ -157,7 +209,7 @@ pub fn parse_level(s: &str) -> Level {
         .map(object::parse_object)
         .collect();
 
-    Level { header, objects, id: 0 }
+    Level { header, objects, id: 0, uid: next_uid() }
 }
 
 #[cfg(test)]
@@ -182,12 +234,29 @@ mod tests {
     }
 
     #[test]
+    fn old_headers_give_colors_and_settings() {
+        // 2.0 style (official levels): kS29 = background, kS30 = ground
+        let lvl = parse_level("kS29,1_40_2_62_3_255_4_0_5_0,kS30,1_0_2_19_3_200,kA13,0,kA4,1;1,1,2,15,3,15;");
+        let bg = lvl.header.channels.iter().find(|c| c.id == 1000).expect("bg");
+        assert_eq!((bg.r, bg.g, bg.b), (40, 62, 255));
+        assert!(lvl.header.channels.iter().any(|c| c.id == 1001 && c.b == 200));
+        assert_eq!(lvl.header.start_speed, 1);
+        // 1.x style: kS1..kS3 background rgb
+        let lvl = parse_level("kS1,64,kS2,99,kS3,255,kS4,32,kS5,93,kS6,241,kA1,7;1,1,2,15,3,15;");
+        let bg = lvl.header.channels.iter().find(|c| c.id == 1000).expect("bg");
+        assert_eq!((bg.r, bg.g, bg.b), (64, 99, 255));
+    }
+
+    #[test]
     fn grief_start_pos_and_channels() {
         let s = std::fs::read_to_string("levels/149992717.gmd").unwrap();
         let lvl = parse_level(&s);
         assert_eq!(lvl.header.start_pos_index, 25);
         assert!(lvl.header.channels.len() >= 10, "channels: {}", lvl.header.channels.len());
         assert!(lvl.header.channels.iter().any(|c| c.id == 1000));
+        let ch = |id| lvl.header.channels.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(ch(155).copy, Some(140));
+        assert!(ch(140).blending && !ch(141).blending);
     }
 
     #[test]

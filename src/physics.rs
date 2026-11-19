@@ -71,14 +71,16 @@ pub const ORB_MINI_SCALE: f64 = 0.8; // vehicleSize < 1
 // --- pads (propellPlayer: vel = flip * 16 * force * (vehicleSize==1 ? 1 : 0.8)) ---
 pub const PAD_BASE: f64 = 16.0;
 pub const PAD_FORCE_YELLOW: f64 = 1.0;
-pub const PAD_FORCE_PINK: f64 = 0.8; // community: pink pad ~ 13.8 → 0.86? calibrate
-pub const PAD_FORCE_RED: f64 = 1.4; // community: red pad > yellow; calibrate
+pub const PAD_FORCE_PINK: f64 = 0.65; // measured: real cube 10.4 = 16 x 0.65 (OpenGD)
+pub const PAD_FORCE_RED: f64 = 1.25; // measured: real ball 12.0 = 16 x 1.25 x 0.6 (OpenGD)
 pub const PAD_BALL_SPIDER_MULT: f64 = 0.6;
 
 // --- world ---
-/// ground surface world y; editor y=0 maps to world y=105 (ground-row cell
-/// center), so objects get wy = editor_y + 105 while the floor stays at 90
+/// ground surface world y
 pub const GROUND_Y: f64 = 90.0;
+/// editor y=0 is the ground line: a ground-row block (editor y=15) sits on
+/// the floor. Measured: xdBot frame fixes put a resting cube's center at 105.
+pub const EDITOR_Y0: f64 = GROUND_Y;
 /// ceiling for flying modes
 // GRIEF builds gameplay up to world y ~1250 (dual tower level): the real
 // GD band (layer gap / zoom) is far taller than 300. 2000 keeps the clamp

@@ -4,7 +4,7 @@
 //! LEB128 varints, extension block, death deltas, then delta-packed inputs:
 //! non-platformer packed = (frame_delta << 1) | down, platformer = (delta << 3) | (button << 1) | down.
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MacroInput {
     pub frame: u64,
     pub button: u8,
@@ -12,7 +12,7 @@ pub struct MacroInput {
     pub down: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Macro {
     pub author: String,
     pub bot_name: String,
@@ -23,6 +23,36 @@ pub struct Macro {
     pub platformer: bool,
     pub deaths: Vec<u64>,
     pub inputs: Vec<MacroInput>,
+    /// xdBot frame fixes: real player-1 (x, y, rotation) per 240Hz frame,
+    /// index = frame - 1 (empty when the macro has none)
+    pub frames: Vec<[f32; 3]>,
+    /// the same for player 2 (dual sections; meaningless while solo)
+    pub frames_p2: Vec<[f32; 3]>,
+    /// solver macros: per press (in order), the tick shifts (min, max) that
+    /// still leave the run in the same state by the next input; see auto::swayed
+    #[serde(default)]
+    pub sway: Vec<(i32, i32)>,
+}
+
+/// xdBot's header extension: varint count, then per frame
+/// varint frame, p1 (x, y, rot) f32be, u8, p2 (x, y, rot) f32be, u8.
+fn xdbot_frames(ext: &[u8]) -> Option<(Vec<[f32; 3]>, Vec<[f32; 3]>)> {
+    let mut r = Reader::new(ext);
+    let n = r.varint().ok()? as usize;
+    let (mut out, mut out2) = (Vec::with_capacity(n.min(ext.len() / 27)), Vec::new());
+    for _ in 0..n {
+        let f = r.varint().ok()? as usize;
+        let p = [r.f32be().ok()?, r.f32be().ok()?, r.f32be().ok()?];
+        r.skip(1).ok()?;
+        let p2 = [r.f32be().ok()?, r.f32be().ok()?, r.f32be().ok()?];
+        r.skip(1).ok()?;
+        if f != out.len() + 1 {
+            return None;
+        }
+        out.push(p);
+        out2.push(p2);
+    }
+    r.empty().then_some((out, out2))
 }
 
 struct Reader<'a> {
@@ -97,7 +127,7 @@ impl<'a> Reader<'a> {
 
 pub fn parse_gdr2(data: &[u8]) -> Result<Macro, String> {
     let mut r = Reader::new(data);
-    if &data[..3] != b"GDR" {
+    if !data.starts_with(b"GDR") {
         return Err("bad magic".into());
     }
     r.skip(3)?;
@@ -121,10 +151,16 @@ pub fn parse_gdr2(data: &[u8]) -> Result<Macro, String> {
     let level_name = r.string()?;
 
     let ext_len = r.varint()? as usize;
+    let (frames, frames_p2) = if bot_name == "xdBot" {
+        r.b.get(..ext_len).and_then(xdbot_frames).unwrap_or_default()
+    } else {
+        Default::default()
+    };
     r.skip(ext_len)?;
 
     let death_count = r.varint()? as usize;
-    let mut deaths = Vec::with_capacity(death_count);
+    // counts come from the file: cap by what the remaining bytes can hold
+    let mut deaths = Vec::with_capacity(death_count.min(r.b.len()));
     let mut p = 0u64;
     for _ in 0..death_count {
         let delta = r.varint()?;
@@ -135,7 +171,7 @@ pub fn parse_gdr2(data: &[u8]) -> Result<Macro, String> {
     let input_count = r.varint()? as usize;
     let p1_inputs = r.varint()? as usize;
 
-    let mut inputs = Vec::with_capacity(input_count);
+    let mut inputs = Vec::with_capacity(input_count.min(r.b.len()));
     let mut frame = 0u64;
     let mut remaining_p1 = p1_inputs;
     let mut in_p2_section = false;
@@ -184,6 +220,9 @@ pub fn parse_gdr2(data: &[u8]) -> Result<Macro, String> {
         platformer,
         deaths,
         inputs,
+        frames,
+        frames_p2,
+        sway: vec![],
     })
 }
 
@@ -208,6 +247,26 @@ mod tests {
         assert!(m.inputs.len() > 1000, "inputs {}", m.inputs.len());
         assert!(m.inputs.windows(2).all(|w| w[0].frame <= w[1].frame));
         assert!(!m.platformer);
+        // frame fixes: one real position per frame, spawn at (0, 105)
+        assert_eq!(m.frames.len(), 40101);
+        assert_eq!(m.frames[0], [0.0, 105.0, 0.0]);
+    }
+
+    #[test]
+    fn rejects_short_and_lying_files() {
+        assert!(parse_gdr2(b"").is_err());
+        assert!(parse_gdr2(b"G").is_err());
+        // valid header up to the death count, which claims ~2^63 deaths
+        let mut d = b"GDR\x02".to_vec();
+        d.extend([0, 0, 0]); // input tag, author, description
+        d.extend([0; 4]); // duration
+        d.push(0); // game version
+        d.extend([0; 8]); // framerate
+        d.extend([0, 0, 0, 0, 0]); // seed, coins, ldm, platformer, bot name
+        d.extend([0, 0, 0, 0]); // bot version, level id, level name, ext len
+        d.extend([0xff; 9]);
+        d.push(0x7f); // death count varint
+        assert!(parse_gdr2(&d).is_err());
     }
 
     #[test]

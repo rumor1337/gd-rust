@@ -3,7 +3,7 @@
 /// One placed object. Keys follow the community .gmd map:
 /// 1=id, 2=x, 3=y, 4=flipX, 5=flipY, 6=rotation(deg),
 /// 20=editorLayer, 21=baseColor, 22=detailColor, 24=zLayer,
-/// 25=groups ('.'-separated), 128=scaleX, 129=scaleY.
+/// 25=groups ('.'-separated), 128=scaleX, 129=scaleY, 135=hide.
 /// Everything else lands in `raw` unmodified.
 #[derive(Debug, Clone)]
 pub struct GdObject {
@@ -17,9 +17,14 @@ pub struct GdObject {
     pub scale_y: f32,
     pub base_color: Option<u16>,
     pub detail_color: Option<u16>,
-    pub z_layer: Option<u8>,
+    /// key 24: B5=-5 B4=-3 B3=-1 B2=1 B1=3 T1=5 T2=7 T3=9 T4=11 (0/None = default)
+    pub z_layer: Option<i8>,
+    /// key 25 (0/None = default)
+    pub z_order: Option<i16>,
     pub editor_layer: u8,
     pub groups: Vec<u16>,
+    /// key 135: invisible in game (still interacts); no sprite, no particles
+    pub hidden: bool,
     pub raw: Vec<(u16, String)>,
 }
 
@@ -37,8 +42,10 @@ impl Default for GdObject {
             base_color: None,
             detail_color: None,
             z_layer: None,
+            z_order: None,
             editor_layer: 0,
             groups: Vec::new(),
+            hidden: false,
             raw: Vec::new(),
         }
     }
@@ -65,6 +72,7 @@ pub fn parse_object(s: &str) -> GdObject {
                 let _ = v.parse::<f32>().map(|x| o.y = x);
             }
             4 => o.flip_x = v == "1",
+            135 => o.hidden = v == "1",
             5 => o.flip_y = v == "1",
             6 => {
                 let _ = v.parse::<f32>().map(|x| o.rot = x);
@@ -74,8 +82,8 @@ pub fn parse_object(s: &str) -> GdObject {
             }
             21 => o.base_color = v.parse::<u16>().ok(),
             22 => o.detail_color = v.parse::<u16>().ok(),
-            24 => o.z_layer = v.parse::<u8>().ok(),
-            25 => { /* zOrder, not groups (key 57 is the real group key) */ }
+            24 => o.z_layer = v.parse::<i8>().ok().filter(|&z| z != 0),
+            25 => o.z_order = v.parse::<i16>().ok().filter(|&z| z != 0),
             33 => {
                 if let Ok(g) = v.parse::<u16>() {
                     o.groups = vec![g];

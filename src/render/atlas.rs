@@ -38,15 +38,26 @@ pub struct SpriteStore {
 }
 
 /// (sheet name, sheet px per unit)
-const SHEETS: [(&str, f32); 7] = [
+const SHEETS: &[(&str, f32)] = &[
     ("GJ_GameSheet-uhd", 4.0),
     ("GJ_GameSheet02-uhd", 4.0),
     ("GJ_GameSheet03-uhd", 4.0),
     ("GJ_GameSheet04-uhd", 4.0),
     ("GJ_GameSheetGlow-uhd", 4.0),
+    // 2.2 decoration: pixel art, particle shapes, animated fire
+    ("PixelSheet_01-uhd", 4.0),
+    ("GJ_ParticleSheet-uhd", 4.0),
+    ("FireSheet_01-uhd", 4.0),
     ("GJ_GameSheetIcons-hd", 2.0),
     // player icons live in their own sheets (icons/dart_NN-uhd)
     ("icons/dart_01-uhd", 4.0),
+    ("icons/player_01-uhd", 4.0),
+    ("icons/ship_01-uhd", 4.0),
+    ("icons/player_ball_01-uhd", 4.0),
+    ("icons/bird_01-uhd", 4.0),
+    ("icons/robot_01-uhd", 4.0),
+    ("icons/spider_01-uhd", 4.0),
+    ("icons/swing_01-uhd", 4.0),
 ];
 
 impl SpriteStore {
@@ -113,6 +124,16 @@ impl SpriteStore {
             .map(|s| s.scale)
             .unwrap_or(4.0);
         self.cache.get(name).map(|p| (p, scale))
+    }
+
+    /// An already-extracted sprite (call `sprite` first), shared read-only.
+    pub fn cached(&self, name: &str) -> Option<&Pixmap> {
+        self.cache.get(name)
+    }
+
+    /// Register a sprite built elsewhere (multi-sprite composites).
+    pub fn insert(&mut self, name: &str, pm: Pixmap) {
+        self.cache.insert(name.to_string(), pm);
     }
 
     /// Extracted sprite (un-rotated, un-trimmed to source size) for a texture

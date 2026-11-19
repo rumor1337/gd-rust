@@ -1,3 +1,4 @@
+pub mod auto;
 pub mod gdr2;
 
 use gdr2::Macro;
@@ -13,7 +14,9 @@ pub struct Playback {
 
 impl Playback {
     pub fn new(m: Macro) -> Self {
-        Playback { macro_: m, idx: 0, frame: 0, hold: false, hold_p2: false }
+        // GD frames are 1-based: the first sim tick runs macro frame 1
+        // (xdBot frame fixes show a frame-f click moving the tick-f position)
+        Playback { macro_: m, idx: 0, frame: 1, hold: false, hold_p2: false }
     }
 
     pub fn duration_frames(&self) -> u64 {
@@ -23,7 +26,7 @@ impl Playback {
     /// Advance one 240Hz tick; returns (p1_hold, p2_hold).
     pub fn step(&mut self) -> (bool, bool) {
         while self.idx < self.macro_.inputs.len()
-            && self.macro_.inputs[self.idx].frame == self.frame
+            && self.macro_.inputs[self.idx].frame <= self.frame
         {
             let i = &self.macro_.inputs[self.idx];
             if i.player2 {
@@ -36,27 +39,14 @@ impl Playback {
         self.frame += 1;
         (self.hold, self.hold_p2)
     }
-}
 
-/// Bot drives the sim by replaying a macro.
-pub struct Bot {
-    pub playback: Playback,
-}
-
-impl Bot {
-    pub fn from_macro(m: Macro) -> Self {
-        Bot { playback: Playback::new(m) }
-    }
-
-    pub fn step(&mut self) -> (bool, bool) {
-        self.playback.step()
-    }
-
-    pub fn restart(&mut self) {
-        self.playback.frame = 0;
-        self.playback.idx = 0;
-        self.playback.hold = false;
-        self.playback.hold_p2 = false;
+    /// The frame `step` just returned ran no physics in the real game (its
+    /// recorded position repeats the previous one). Replays skip the sim
+    /// tick there to stay frame-aligned with the macro.
+    pub fn stalled(&self) -> bool {
+        let f = (self.frame - 1) as usize;
+        let fr = &self.macro_.frames;
+        f >= 1 && f < fr.len() && fr[f][0] == fr[f - 1][0] && fr[f][1] == fr[f - 1][1]
     }
 }
 
@@ -75,13 +65,16 @@ mod tests {
             framerate: 240.0,
             platformer: false,
             deaths: vec![],
+            frames: vec![],
+            frames_p2: vec![],
+            sway: vec![],
             inputs: vec![
                 gdr2::MacroInput { frame: 5, button: 1, player2: false, down: true },
                 gdr2::MacroInput { frame: 10, button: 1, player2: false, down: false },
             ],
         };
         let mut p = Playback::new(m);
-        for _ in 0..5 {
+        for _ in 1..5 {
             let (h, _) = p.step();
             assert!(!h);
         }

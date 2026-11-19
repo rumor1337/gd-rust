@@ -16,6 +16,8 @@ pub enum GameMode {
 
 #[derive(Debug, Clone)]
 pub struct Player {
+    /// recorded in-game rotation (deg, clockwise) from replay fixes; render only
+    pub vis_rot: Option<f64>,
     /// world center
     pub x: f64,
     pub y: f64,
@@ -34,6 +36,8 @@ pub struct Player {
     pub robot_frames: f64,
     /// y movement of the last tick (post-collision) — true travel direction
     pub last_move_dy: f64,
+    /// y before this tick's move (collisions: which side the player came from)
+    pub prev_y: f64,
     /// riding a slope this tick (GD m_isOnSlope; cleared each pass)
     pub slope_on: bool,
     /// GD m_isCurrentSlopeTop: slopeFloorTop of the last ridden slope
@@ -42,11 +46,40 @@ pub struct Player {
     pub slope_id: Option<usize>,
     /// player radius on the last ridden slope (rad)
     pub slope_rad: f64,
+    /// gravity trigger multiplier (key 148)
+    pub gravity_mult: f64,
+    /// (floor, ceiling) world y for this mode; cube/robot: ground, no ceiling
+    pub band: (f64, f64),
+    /// ball: a press is pending (one flip per press; OpenGD clears isHolding)
+    pub ball_ready: bool,
+    /// dash orb in progress: dy per unit dx (tan of the dash angle)
+    pub dash: Option<f64>,
+}
+
+/// GD rounds velocity (in these units) to 0.001 after each update
+/// (gd-sim roundVel; the real GRIEF run shows 3-decimal ship velocities)
+fn round_vel(v: f64) -> f64 {
+    let t = v.trunc();
+    if v == t { v } else { ((v - t) * 1000.0).round() / 1000.0 + t }
+}
+
+/// GD's camera band for a flying-family mode entered at `y` (OpenGD
+/// PlayLayer::changeGameMode): ship/ufo/wave/swing get 10 blocks, ball and
+/// spider 8, centered on 240/210 low down or on the portal's 30-grid row.
+pub fn band_for(mode: GameMode, y: f64) -> (f64, f64) {
+    let (low, cut, half) = match mode {
+        GameMode::Ship | GameMode::Ufo | GameMode::Wave | GameMode::Swing => (240.0, 270.0, 150.0),
+        GameMode::Ball | GameMode::Spider => (210.0, 240.0, 120.0),
+        GameMode::Cube | GameMode::Robot => return (GROUND_Y, CEIL_Y),
+    };
+    let c = if y < cut { low } else { (y / 30.0).floor() * 30.0 };
+    ((c - half).max(GROUND_Y), c + half)
 }
 
 impl Player {
     pub fn new(mode: GameMode, speed_idx: u8) -> Player {
         Player {
+            vis_rot: None,
             x: SPAWN_X,
             y: SPAWN_Y,
             vel_y: 0.0,
@@ -59,10 +92,15 @@ impl Player {
             queued_hold: false,
             robot_frames: 99.0,
             last_move_dy: 0.0,
+            prev_y: 0.0,
             slope_on: false,
             slope_top: None,
             slope_id: None,
             slope_rad: 0.0,
+            gravity_mult: 1.0,
+            band: band_for(mode, SPAWN_Y),
+            ball_ready: false,
+            dash: None,
         }
     }
 
@@ -82,7 +120,10 @@ impl Player {
 
     /// Physical half-height for floor and ceiling contact (bounds_318190: 15.0 * scale)
     pub fn phys_half(&self) -> f64 {
-        if self.mini { 9.0 } else { 15.0 }
+        // wave: measured from xdBot frame fixes, the mini wave rests at
+        // floor + 6 (= 10 * 0.6)
+        let full = if self.mode == GameMode::Wave { 10.0 } else { 15.0 };
+        if self.mini { full * 0.6 } else { full }
     }
 
     /// gravity sign: +1 pulls down (normal), -1 pulls up
@@ -107,38 +148,70 @@ impl Player {
     fn integrate(&mut self) -> (f64, f64) {
         let flip = self.grav_sign();
         let dz = DT * DT_SLOW; // 0.225 — the famous 0.9 vertical quirk
+        if let Some(slope) = self.dash {
+            // dash: straight line at the orb's angle, no gravity
+            self.vel_y = 0.0;
+            return (self.dx(), slope * self.dx());
+        }
+        let g = GRAVITY * self.gravity_mult;
+        // OpenGD updateJump: falling faster than 2g means the player left the
+        // ground (walked off a ledge, left a wave mid-air): no more jumps
+        if matches!(self.mode, GameMode::Cube | GameMode::Robot | GameMode::Spider | GameMode::Ball) && self.vel_y * flip < -2.0 * GRAVITY {
+            self.on_ground = false;
+        }
         let dy;
         match self.mode {
-            GameMode::Cube | GameMode::Robot => {
-                // hold-edge handled by Sim (jump()); here gravity + terminal
-                self.vel_y -= GRAVITY * dz * flip;
+            GameMode::Cube | GameMode::Robot | GameMode::Spider => {
+                // jump/teleport edges handled by Sim; here gravity + terminal
+                self.vel_y -= g * dz * flip;
                 if self.mode == GameMode::Robot && self.hold && self.robot_frames < 12.0 {
-                    self.vel_y += GRAVITY * dz * flip.signum() * -1.0 * 0.9;
+                    self.vel_y += g * dz * flip * 0.9; // hold boost cancels most of gravity
                 }
-                self.vel_y = self.vel_y.clamp(-TERMINAL_VEL, TERMINAL_VEL);
+                self.vel_y = (self.vel_y * flip).max(-TERMINAL_VEL) * flip; // GD caps falling only: pads launch past 15
                 dy = dz * self.vel_y;
             }
             GameMode::Ball => {
-                self.vel_y -= GRAVITY * dz * flip * BALL_GRAV_MULT;
-                self.vel_y = self.vel_y.clamp(-TERMINAL_VEL, TERMINAL_VEL);
+                self.vel_y -= g * dz * flip * BALL_GRAV_MULT;
+                self.vel_y = (self.vel_y * flip).max(-TERMINAL_VEL) * flip; // GD caps falling only: pads launch past 15
                 dy = dz * self.vel_y;
             }
             GameMode::Ufo => {
-                let mult = if self.falling() { UFO_GRAV_FALLING } else { UFO_GRAV_RISING };
-                self.vel_y -= GRAVITY * dz * flip * mult * UFO_GRAV_SCALE / self.size();
+                // OpenGD: 0.8 while falling, 1.2 rising (GD's recordings: a
+                // falling UFO accelerates at 0.4 g); flying modes scale by
+                // 0.85 when mini, and clamp vy to -6.4..8 (mirrored flipped)
+                // "falling" for the UFO, OpenGD playerIsFalling: vy < g, or
+                // world vy > g when flipped (not mirrored); 2g when mini
+                // (fits GD's recordings to 0.002)
+                let cut = GRAVITY * if self.mini { 2.0 } else { 1.0 } * if self.grav_flip { -1.0 } else { 1.0 };
+                let mult = if self.vel_y * flip < cut { UFO_GRAV_RISING } else { UFO_GRAV_FALLING };
+                let size = if self.mini { 0.85 } else { 1.0 };
+                self.vel_y -= g * dz * flip * mult * UFO_GRAV_SCALE / size;
+                let v = (self.vel_y * flip).clamp(-6.4 / size, 8.0 / size);
+                self.vel_y = v * flip;
                 dy = dz * self.vel_y;
             }
             GameMode::Ship | GameMode::Swing => {
-                let accel = SHIP_ACCEL;
-                let boost = if self.falling() { SHIP_BOOST_FALLING } else { SHIP_BOOST };
-                let dir = if self.hold { SHIP_HOLD_MULT } else if !self.falling() { SHIP_RELEASE_MULT } else { 1.0 };
-                // swing: gravity never flips direction of control
-                let gflip = if self.mode == GameMode::Swing { 1.0 } else { flip };
-                self.vel_y -= GRAVITY * dz * gflip * accel * boost * dir / self.size();
-                let (lo, hi) = (SHIP_VEL_MIN, SHIP_VEL_MAX);
-                self.vel_y = self.vel_y / self.size();
-                self.vel_y = self.vel_y.clamp(lo, hi);
-                self.vel_y *= self.size();
+                // GD 2.2 ship, in velocity units of 1/54 unit/s (dy = v * 0.225).
+                // Accelerations (unit/s²) and the speed-indexed threshold are
+                // gd-sim's; verified tick-exact against the real GRIEF run.
+                // shortcut: swing = ship physics with no hold thrust (each
+                // click flips gravity, see Sim); 2.2 swing constants are not
+                // decompiled. Upgrade from the decomp if a level needs swing.
+                const THRESH: [f64; 5] = [101.541492, 103.485494592, 103.377492, 103.809492, 103.809492];
+                let thrust = self.hold && self.mode == GameMode::Ship;
+                let v = self.vel_y * flip; // gravity-relative
+                let thr = THRESH[self.speed_idx as usize % 5] / 54.0;
+                let a = if thrust {
+                    if v <= thr { 1397.0491 } else { 1117.64328 }
+                } else if v >= thr {
+                    -1341.1719
+                } else {
+                    -894.11464
+                };
+                let a = a / if self.mini { 0.85 } else { 1.0 } * self.gravity_mult;
+                let (lo, hi) = if self.mini { (-406.566, 508.248) } else { (-345.6, 432.0) };
+                let v = round_vel(v + a / (54.0 * TICK_HZ)).clamp(lo / 54.0, hi / 54.0);
+                self.vel_y = v * flip;
                 dy = dz * self.vel_y;
             }
             GameMode::Wave => {
@@ -153,12 +226,9 @@ impl Player {
                 });
                 let slope = if self.mini { slope } else { 1.0 };
                 let s = if self.hold { 1.0 } else { -1.0 } * if self.grav_flip { -1.0 } else { 1.0 };
-                self.vel_y = s * slope * self.speed_units();
+                // stored like GD: dy = v * 0.25 (no 0.9 factor for the wave)
+                self.vel_y = s * slope * self.dx() / 0.25;
                 dy = s * slope * self.dx();
-            }
-            GameMode::Spider => {
-                // no free physics: sits snapped until teleport
-                dy = 0.0;
             }
         }
         (self.dx(), dy)
@@ -178,16 +248,19 @@ impl Player {
         let flip = self.grav_sign();
         match self.mode {
             GameMode::Cube => {
-                self.vel_y = -flip * JUMP_VEL * self.size();
+                self.vel_y = flip * JUMP_VEL * self.size();
                 self.on_ground = false;
             }
             GameMode::Robot => {
-                self.vel_y = -flip * JUMP_VEL * self.size() * 0.6;
+                self.vel_y = flip * JUMP_VEL * self.size() * 0.6;
                 self.on_ground = false;
                 self.robot_frames = 0.0;
             }
             GameMode::Ball => {
-                self.vel_y *= BALL_JUMP_MULT;
+                // a set speed toward the new side, whatever the old one: jump
+                // speed, halved by the flip, x0.6 (OpenGD; the recordings show
+                // a constant +-3.1 one tick after every ball click)
+                self.vel_y = flip * JUMP_VEL * self.size() * 0.5 * BALL_JUMP_MULT;
                 self.grav_flip = !self.grav_flip;
                 self.on_ground = false;
             }
@@ -198,20 +271,31 @@ impl Player {
     /// ufo hop on press
     pub fn ufo_hop(&mut self) {
         let flip = self.grav_sign();
-        let v = if self.mini { UFO_JUMP_VEL_MINI } else { UFO_JUMP_VEL };
-        self.vel_y = -flip * v * self.size();
+        // OpenGD: 8 x 0.85 when mini (flying modes' mini size), 7 otherwise
+        let v = if self.mini { UFO_JUMP_VEL_MINI * 0.85 } else { UFO_JUMP_VEL };
+        self.vel_y = flip * v;
     }
 
-    /// spider teleport: flip gravity and snap to opposite surface (y set by Sim collision)
+    /// spider teleport: flip gravity; Sim snaps the player to the opposite surface
     pub fn spider_teleport(&mut self) {
         self.grav_flip = !self.grav_flip;
         self.vel_y = 0.0;
     }
 
+    /// dash orb: dash at `deg` (math angle, CCW from +x), clamped to ±70°
+    pub fn start_dash(&mut self, deg: f64, pink: bool) {
+        if pink {
+            self.grav_flip = !self.grav_flip;
+        }
+        self.dash = Some(deg.clamp(-70.0, 70.0).to_radians().tan());
+        self.on_ground = false;
+        self.queued_hold = false;
+    }
+
     /// ringJump — orb activation. force already mode-scaled by Sim via helpers below.
     pub fn apply_orb(&mut self, vel: f64) {
         let flip = self.grav_sign();
-        self.vel_y = -flip * vel;
+        self.vel_y = flip * vel;
         self.on_ground = false;
         self.queued_hold = false;
         if self.mode == GameMode::Ball || self.mode == GameMode::Spider {
@@ -228,17 +312,20 @@ impl Player {
         if self.mode == GameMode::Ball || self.mode == GameMode::Spider {
             v *= PAD_BALL_SPIDER_MULT;
         }
-        self.vel_y = -flip * v;
+        self.vel_y = flip * v;
         self.on_ground = false;
     }
 
-    /// mode entry (portal). Ship halves vertical velocity.
-    pub fn enter_mode(&mut self, mode: GameMode) {
+    /// mode entry (portal at height `portal_y`). Ship halves vertical velocity.
+    /// shortcut: wave -> ship divides the wave's velocity by 8 (one measured
+    /// GRIEF transition); other entries keep the older /2 guess.
+    pub fn enter_mode(&mut self, mode: GameMode, portal_y: f64) {
+        self.band = band_for(mode, portal_y);
         if self.mode == GameMode::Ship && mode != GameMode::Ship {
             // leaving ship: keep vel
         }
         if mode == GameMode::Ship && self.mode != GameMode::Ship {
-            self.vel_y /= 2.0;
+            self.vel_y /= if self.mode == GameMode::Wave { 8.0 } else { 2.0 };
         }
         if mode == GameMode::Spider || mode == GameMode::Wave {
             self.vel_y = 0.0;
@@ -259,7 +346,7 @@ impl Player {
     pub fn green_orb(&mut self, vel: f64) {
         self.grav_flip = !self.grav_flip;
         let flip = self.grav_sign();
-        self.vel_y = -flip * vel;
+        self.vel_y = flip * vel;
         self.on_ground = false;
         self.queued_hold = false;
     }
@@ -305,7 +392,6 @@ pub fn orb_velocity(kind: crate::sim::objects::ObjectKind, p: &Player) -> Option
             GameMode::Spider => -16.5,
             _ => -15.0,
         },
-        OrbDash => base, // shortcut: treat dash orbs as yellow
         _ => return None,
     };
     let mut v = v;
@@ -322,7 +408,7 @@ pub fn pad_force(kind: crate::sim::objects::ObjectKind) -> Option<f64> {
         PadYellow => Some(PAD_FORCE_YELLOW),
         PadPink => Some(PAD_FORCE_PINK),
         PadRed => Some(PAD_FORCE_RED),
-        PadGravity => Some(1.0),
+        PadGravity => Some(0.8), // OpenGD propellPlayer(0.8)
         _ => None,
     }
 }
