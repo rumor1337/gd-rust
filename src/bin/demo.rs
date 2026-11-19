@@ -1,35 +1,21 @@
-//! 16:9 visual demo: a level's macro replayed in a local window.
+//! Geometry Dash in a 16:9 window: play a level yourself.
 //!
-//! Usage: `demo [level id] [macro url]` (default GRIEF, 149992717). A level
-//! not in levels/ is downloaded with its song by tools/fetch_level.py (the
-//! optional macro url is saved as macros/<id>.gdr2). The macro is any
-//! macros/*.gdr2 recorded on that level id (xdBot ones with frame fixes
-//! first), else the engine's own solve (bot::auto, cached as
-//! macros/<id>.auto.json).
+//! Usage: `demo [level id] [--assets <GD folder>]` (default Stereo Madness, 1).
+//! A level not in levels/ is downloaded with its song by tools/fetch_level.py.
 //!
-//! Level queue: type a level id (and optionally a macro url) in the
-//! terminal and press Enter. It is downloaded and solved in the background
-//! while the current level keeps playing, then the window switches to it.
-//! A level the solver can't finish is reported and not switched to.
-//!
-//! Insert (or M+E together) opens a menu in the window: type a level id and Enter to load it,
-//! Tab switches Auto (the macro plays) / Manual (you play: Space, Up, W or
-//! the left mouse button; deaths restart). Insert, M+E or Escape closes it.
+//! Space, Up, W or the left mouse button jump; a death restarts the attempt.
+//! Insert (or M+E together, for keyboards without Insert) opens a menu: type
+//! a level id and Enter to load it; Insert, M+E or Escape closes it. A level
+//! id typed in the terminal (Enter) loads too. R restarts, Escape/Q quits.
 //!
 //! Art from the player's Geometry Dash install (see gdrust::assets: asked
-//! for once with a folder picker if not found; --assets <dir> / DEMO_ASSETS override),
-//! macro p2 drives sim p0 (SWAP wiring, same as calibrate). R restarts the
-//! attempt, Escape/Q quits. Uncapped frame rate; the sim advances 240Hz
-//! ticks by wall-clock time, and prints the run time on completion. Progress/attempt live in the window title.
-//!
-//! The player follows xdBot's recorded real positions (frame fixes), as
-//! xdBot does in-game, so the replay runs the whole level; DEMO_PURE=1
-//! replays inputs only (pure sim physics, dies where the sim drifts).
+//! for once with a folder picker if not found; --assets <dir> / DEMO_ASSETS
+//! override). Uncapped frame rate; the sim advances 240Hz ticks by
+//! wall-clock time. Progress and attempt live in the window title.
 //!
 //! The song and GD's death sound play in-process (rodio) from the sim's song
 //! cue (level offset, then song triggers); DEMO_MUTE=1 turns them off.
 
-use gdrust::bot::Playback;
 use gdrust::level::parse_level;
 use gdrust::render::{Renderer, FRAME_H, FRAME_W};
 use gdrust::sim::objects::ObjectTable;
@@ -44,20 +30,17 @@ struct Loaded {
     level: gdrust::level::Level,
     name: String,
     song: Option<String>,
-    m: gdrust::bot::gdr2::Macro,
 }
 
-/// Level + metadata, downloading them (and the macro url, if given) when missing.
-fn load_level(manifest: &str, id: u32, macro_url: Option<&str>) -> Result<(gdrust::level::Level, String, Option<String>), String> {
+/// Level + metadata, downloading them when missing.
+fn load_level(manifest: &str, id: u32) -> Result<Loaded, String> {
     let (gmd, meta) = (format!("{manifest}/levels/{id}.gmd"), format!("{manifest}/levels/{id}.json"));
-    let have_macro = std::path::Path::new(&format!("{manifest}/macros/{id}.gdr2")).exists();
-    if !std::path::Path::new(&gmd).exists() || !std::path::Path::new(&meta).exists() || (macro_url.is_some() && !have_macro) {
+    if !std::path::Path::new(&gmd).exists() || !std::path::Path::new(&meta).exists() {
         // Python's name differs by OS (Windows: python / py)
         let ok = ["python3", "python", "py"].iter().find_map(|py| {
-            Command::new(py).args(["-I", &format!("{manifest}/tools/fetch_level.py"), &id.to_string()]).args(macro_url).status().ok()
+            Command::new(py).args(["-I", &format!("{manifest}/tools/fetch_level.py"), &id.to_string()]).status().ok()
         });
-        let ok = ok.is_some_and(|s| s.success());
-        if !ok {
+        if !ok.is_some_and(|s| s.success()) {
             return Err(format!("could not download level {id}"));
         }
     }
@@ -67,34 +50,7 @@ fn load_level(manifest: &str, id: u32, macro_url: Option<&str>) -> Result<(gdrus
     let meta: serde_json::Value = serde_json::from_str(&read(&meta)?).map_err(|e| format!("level {id} meta: {e}"))?;
     let name = meta["name"].as_str().unwrap_or("level").to_string();
     let song = meta["song"].as_str().map(|s| format!("{manifest}/{s}"));
-    Ok((level, name, song))
-}
-
-/// Download (if needed) and find or solve the macro. Err: what went wrong,
-/// plus the level with its partial solve when the solver gave up.
-fn prepare(
-    manifest: &str,
-    table: &ObjectTable,
-    id: u32,
-    macro_url: Option<&str>,
-    status: &dyn Fn(String),
-) -> Result<Loaded, (String, Option<Loaded>)> {
-    let (level, name, song) = load_level(manifest, id, macro_url).map_err(|e| (e, None))?;
-    let t = Instant::now();
-    let macros = std::path::Path::new(manifest).join("macros");
-    let solved = gdrust::bot::auto::macro_for(&macros, &level, table, |p| status(format!("solving {name} {p:.0}%")));
-    status(String::new());
-    match solved {
-        Ok(m) => {
-            if m.bot_name == "gd-rust auto" {
-                println!("{name}: engine solve ready ({:.1}s)", t.elapsed().as_secs_f64());
-            }
-            Ok(Loaded { level, name, song, m })
-        }
-        Err((m, p)) => {
-            Err((format!("couldn't solve {name} past {p:.1}% ({:.1}s)", t.elapsed().as_secs_f64()), Some(Loaded { level, name, song, m })))
-        }
-    }
+    Ok(Loaded { level, name, song })
 }
 
 /// A decoded sound, all in memory so playback can start at any sample.
@@ -250,7 +206,7 @@ fn key_digit(k: Key) -> Option<char> {
 }
 
 fn main() {
-    // shipped build: levels/ macros/ data/ next to the exe; dev: the source tree
+    // shipped build: levels/ data/ next to the exe; dev: the source tree
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
     let manifest: &'static str = match exe_dir.filter(|d| d.join("data/objects.json").exists()) {
         Some(d) => Box::leak(d.to_string_lossy().into_owned().into_boxed_str()),
@@ -260,39 +216,20 @@ fn main() {
     // the player's own Geometry Dash art (RobTop's, never shipped): asked
     // for on the first run, before anything slow happens
     let assets = gdrust::assets::find_or_ask();
-    let id: u32 = args.get(1).map(|a| a.parse().expect("level id must be a number")).unwrap_or(149992717);
-    let table =
-        ObjectTable::load(std::path::Path::new(&format!("{manifest}/data/objects.json"))).unwrap();
-    // the first level: solved before the window opens; a partial solve
-    // still plays (up to where the solver got)
-    let last = std::cell::RefCell::new(String::new());
-    let print = |s: String| {
-        if !s.is_empty() && *last.borrow() != s {
-            eprint!("\r{s}   ");
-            *last.borrow_mut() = s;
-        }
-    };
-    let first = match prepare(manifest, &table, id, args.get(2).map(|s| s.as_str()), &print) {
-        Ok(l) => l,
-        Err((e, Some(partial))) => {
-            eprintln!("\n{e}: playing the partial run");
-            partial
-        }
-        Err((e, None)) => panic!("{e}"),
-    };
-    let Loaded { mut level, mut name, song: level_song, mut m } = first;
+    let id: u32 = args.get(1).map(|a| a.parse().expect("level id must be a number")).unwrap_or(1);
+    let table = ObjectTable::load(std::path::Path::new(&format!("{manifest}/data/objects.json"))).unwrap();
+    let Loaded { mut level, mut name, song: level_song } = load_level(manifest, id).unwrap_or_else(|e| panic!("{e}"));
 
-    // level queue: "<id> [macro url]" lines from the terminal or the Insert
-    // menu, prepared one at a time; manual ones (the menu in manual mode)
-    // are not solved, the player drives
-    let status = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    // level ids from the terminal or the Insert menu, loaded (downloaded)
+    // one at a time in the background, then switched to
+    let status = Arc::new(std::sync::Mutex::new(String::new()));
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Loaded>();
-    let (req_tx, req_rx) = std::sync::mpsc::channel::<(String, bool)>();
+    let (req_tx, req_rx) = std::sync::mpsc::channel::<String>();
     {
         let req_tx = req_tx.clone();
         std::thread::spawn(move || {
             for line in std::io::stdin().lines().map_while(Result::ok) {
-                if req_tx.send((line, false)).is_err() {
+                if req_tx.send(line).is_err() {
                     return;
                 }
             }
@@ -300,35 +237,25 @@ fn main() {
     }
     {
         let status = status.clone();
-        let manifest = manifest.to_string();
         std::thread::spawn(move || {
-            let table = ObjectTable::load(std::path::Path::new(&format!("{manifest}/data/objects.json"))).expect("object table");
             let set = |s: String| *status.lock().unwrap_or_else(|e| e.into_inner()) = s;
-            println!("type a level id (+ optional macro url) and Enter to queue it, or press Insert (or M+E) in the window");
-            for (line, manual) in req_rx {
-                let mut words = line.split_whitespace();
-                let Some(id) = words.next().and_then(|w| w.parse::<u32>().ok()) else {
+            println!("type a level id and Enter to load it, or press Insert (or M+E) in the window");
+            for line in req_rx {
+                let Ok(id) = line.trim().parse::<u32>() else {
                     if !line.trim().is_empty() {
                         println!("not a level id: {line}");
                     }
                     continue;
                 };
-                set(format!("fetching {id}"));
-                let got = if manual {
-                    load_level(&manifest, id, None)
-                        .map(|(level, name, song)| Loaded { level, name, song, m: Default::default() })
-                        .map_err(|e| (e, None))
-                } else {
-                    prepare(&manifest, &table, id, words.next(), &set)
-                };
-                match got {
+                set(format!("loading {id}"));
+                match load_level(manifest, id) {
                     Ok(l) => {
                         println!("{}: ready, switching", l.name);
                         if ready_tx.send(l).is_err() {
                             return; // window closed
                         }
                     }
-                    Err((e, _)) => println!("{e}: keeping the current level"),
+                    Err(e) => println!("{e}: keeping the current level"),
                 }
                 set(String::new());
             }
@@ -336,119 +263,57 @@ fn main() {
     }
 
     let mut renderer = Renderer::new(&assets);
-
     let mut sim = Sim::new(&level, &table);
-    let mut pure = std::env::var("DEMO_PURE").is_ok() || m.frames.is_empty();
-    sim.follow = !pure;
-    let mut score = gdrust::bot::auto::difficulty(&level, &table).0;
-    println!("{name}: difficulty {score:.2}, misses a click in {:.0}% of attempts", 100.0 * gdrust::bot::auto::fail_chance(score));
-    let mut cur = gdrust::bot::auto::attempt(&m, score, seed());
-    let mut pb = Playback::new(cur.clone());
-    let mut tick = 0usize;
-
-    let mut window = Window::new(
-        &format!("{name} — gd-rust demo"),
-        FRAME_W as usize,
-        FRAME_H as usize,
-        WindowOptions::default(),
-    )
-    .expect("window");
+    let mut window = Window::new(&format!("{name} — gd-rust"), FRAME_W as usize, FRAME_H as usize, WindowOptions::default())
+        .expect("window");
     // uncapped: the sim advances by wall-clock time (240Hz ticks), the
     // renderer draws as fast as it can
     window.set_target_fps(0);
     let tick_dt = 1.0 / 240.0;
     let mut acc = 0.0f64;
-    let mut dropped = 0.0f64;
-    let mut stalls = 0usize;
-    let mut clock = std::time::Instant::now();
-    let mut run_start = std::time::Instant::now();
+    let mut clock = Instant::now();
+    let mut ticks = 0u64;
     let mut frames_drawn = 0u64;
     let mut reported = false;
     let mut fb = vec![0u32; FRAME_W as usize * FRAME_H as usize];
-    let mut last = std::time::Instant::now();
+    let mut last = Instant::now();
     let mut fps_smooth = 60.0f32;
     let mut music = Music::new(format!("{manifest}/audio").into(), assets.clone(), level_song);
     let mute = std::env::var("DEMO_MUTE").is_ok();
     let mut prof = std::env::var("DEMO_PROF").is_ok().then_some([0.0f64; 5]);
-    // Insert menu: the level id being typed (None: closed); manual: the
-    // player clicks (Space / Up / W / left mouse) instead of the macro
+    // Insert menu: the level id being typed (None: closed)
     let mut menu: Option<String> = None;
-    let mut manual = false;
 
     while window.is_open() {
-        // a queued level finished preparing: switch to it now
+        // a requested level finished loading: switch to it now
         if let Ok(next) = ready_rx.try_recv() {
-            (level, name, m) = (next.level, next.name, next.m);
+            (level, name) = (next.level, next.name);
             music.stop();
             music.level_song = next.song;
             sim = Sim::new(&level, &table);
-            score = gdrust::bot::auto::difficulty(&level, &table).0;
-            println!("{name}: difficulty {score:.2}, misses a click in {:.0}% of attempts", 100.0 * gdrust::bot::auto::fail_chance(score));
-            pure = std::env::var("DEMO_PURE").is_ok() || m.frames.is_empty();
-            sim.follow = !pure;
-            pb = { cur = gdrust::bot::auto::attempt(&m, score, seed()); Playback::new(cur.clone()) };
-            tick = 0;
-            run_start = std::time::Instant::now();
-            frames_drawn = 0;
-            reported = false;
-            dropped = 0.0;
-            stalls = 0;
+            (ticks, reported) = (0, false);
         }
         // as many 240Hz ticks as real time elapsed (capped so a hitch does
-        // not snowball); the macro advances one frame per tick
-        let now = std::time::Instant::now();
-        acc += (now - clock).as_secs_f64();
-        if acc > 0.25 {
-            dropped += acc - 0.25; // a hitch: skip ahead rather than snowball
-            acc = 0.25;
-        }
+        // not snowball)
+        let now = Instant::now();
+        acc = (acc + (now - clock).as_secs_f64()).min(0.25);
         clock = now;
         let held = menu.is_none()
             && ([Key::Space, Key::Up, Key::W].iter().any(|&k| window.is_key_down(k)) || window.get_mouse_down(minifb::MouseButton::Left));
         while acc >= tick_dt {
             acc -= tick_dt;
-            // death: restart immediately (the sim's internal respawn would
-            // otherwise resume the macro at the death frame, not frame 0)
+            // death (or a finished run): restart from the beginning
             if sim.state == gdrust::sim::RunState::Dead || (reported && sim.progress() >= 100.0) {
                 if sim.state == gdrust::sim::RunState::Dead && !mute {
                     music.sfx("explode_11.ogg"); // GD's death sound
                 }
                 sim.reset();
-                pb = { cur = gdrust::bot::auto::attempt(&m, score, seed()); Playback::new(cur.clone()) };
-                tick = 0;
-                run_start = std::time::Instant::now();
-                frames_drawn = 0;
-                reported = false;
-                dropped = 0.0;
-                stalls = 0;
+                (ticks, reported) = (0, false);
             }
-            if manual {
-                // the player's own clicks, our physics alone: deaths count
-                tick += 1;
-                sim.follow = false;
-                sim.step_single(InputState { hold: held, hold_p2: held });
-                continue;
-            }
-            let (p1, p2) = pb.step();
-            tick += 1;
-            if pb.stalled() {
-                stalls += 1;
-                continue; // the real game ran no physics this frame
-            }
-            // deaths are off only while GD's recorded path still pins the
-            // player: past a missed click (attempt() cuts the frames there)
-            // the run is our physics alone and must be able to die
-            sim.follow = !pure && tick < cur.frames.len();
-            sim.step_single(InputState { hold: p2, hold_p2: p1 });
-            if let Some(f) = cur.frames.get(tick).filter(|_| !pure) {
-                sim.apply_fix(f[0] as f64, f[1] as f64, f[2] as f64);
-            }
-            if let Some(f) = cur.frames_p2.get(tick).filter(|_| !pure) {
-                sim.apply_fix_p2(f[0] as f64, f[1] as f64, f[2] as f64);
-            }
+            ticks += 1;
+            sim.step_single(InputState { hold: held, hold_p2: held });
         }
         let menu_was_open = menu.is_some();
-        let mut restart = false;
         // M+E together does the same, for keyboards without Insert (60%)
         let pressed = |k| window.is_key_pressed(k, minifb::KeyRepeat::No);
         let combo = window.is_key_down(Key::M) && window.is_key_down(Key::E) && (pressed(Key::M) || pressed(Key::E));
@@ -461,16 +326,8 @@ fn main() {
                 match k {
                     Key::Backspace => drop(code.pop()),
                     Key::Escape => close = true,
-                    Key::Tab => {
-                        manual = !manual;
-                        restart = true;
-                        // a level loaded for manual play has no macro yet: solve it
-                        if !manual && m.inputs.is_empty() {
-                            let _ = req_tx.send((level.id.to_string(), false));
-                        }
-                    }
                     Key::Enter | Key::NumPadEnter if !code.is_empty() => {
-                        let _ = req_tx.send((code.clone(), manual));
+                        let _ = req_tx.send(code.clone());
                         close = true;
                     }
                     k => {
@@ -484,26 +341,15 @@ fn main() {
                 menu = None;
             }
         }
-        if restart || (!menu_was_open && window.is_key_pressed(Key::R, minifb::KeyRepeat::No)) {
+        if !menu_was_open && window.is_key_pressed(Key::R, minifb::KeyRepeat::No) {
             sim.reset();
-            pb = { cur = gdrust::bot::auto::attempt(&m, score, seed()); Playback::new(cur.clone()) };
-            tick = 0;
-            run_start = std::time::Instant::now();
-            frames_drawn = 0;
-            dropped = 0.0;
-            stalls = 0;
+            (ticks, reported) = (0, false);
         }
         if !reported && (sim.progress() >= 100.0 || sim.state == gdrust::sim::RunState::Complete) {
-            // run timing: wall clock vs the macro's in-game time
-            let wall = run_start.elapsed().as_secs_f64();
-            println!(
-                "level complete: wall {wall:.2}s ({dropped:.2}s dropped by hitches), macro {:.2}s ({tick} frames, {stalls} stall), avg {:.0} fps",
-                tick as f64 / 240.0,
-                frames_drawn as f64 / wall
-            );
+            println!("{name} complete in {:.2}s, attempt {}", ticks as f64 / 240.0, sim.attempt);
             reported = true;
         }
-        if !menu_was_open && (window.is_key_pressed(Key::Escape, minifb::KeyRepeat::No) || window.is_key_pressed(Key::Q, minifb::KeyRepeat::No)) {
+        if !menu_was_open && (pressed(Key::Escape) || pressed(Key::Q)) {
             break;
         }
 
@@ -514,7 +360,7 @@ fn main() {
         }
         frames_drawn += 1;
         let dt = last.elapsed().as_secs_f32();
-        last = std::time::Instant::now();
+        last = Instant::now();
         if dt > 0.0 {
             fps_smooth = fps_smooth * 0.9 + (1.0 / dt) * 0.1;
         }
@@ -523,21 +369,20 @@ fn main() {
         renderer.set_menu(menu.as_ref().map(|code| {
             vec![
                 format!("Level ID: {code}_"),
-                format!("Mode: {} (Tab)", if manual { "Manual" } else { "Auto" }),
                 if next.is_empty() { "Enter: load   Insert / M+E: close".to_string() } else { next.clone() },
             ]
         }));
         // draw this frame on a worker while the window shows the last one:
         // a frame costs max(draw, present), not their sum (one frame later)
-        let t_draw = std::time::Instant::now();
+        let t_draw = Instant::now();
         let (rgba, present_ms) = std::thread::scope(|sc| {
             let job = sc.spawn(|| renderer.draw(&level, &table, &sim));
-            let t = std::time::Instant::now();
+            let t = Instant::now();
             let _ = window.update_with_buffer(&fb, FRAME_W as usize, FRAME_H as usize);
             let present_ms = t.elapsed().as_secs_f64() * 1000.0;
             (job.join().expect("render thread"), present_ms)
         });
-        let t_conv = std::time::Instant::now();
+        let t_conv = Instant::now();
         {
             // renderer output is RGBA; minifb wants 0RGB
             use rayon::prelude::*;
@@ -548,14 +393,12 @@ fn main() {
                 }
             });
         }
-        let t_title = std::time::Instant::now();
+        let t_title = Instant::now();
         window.set_title(&format!(
-            "{name} — {} — attempt {} — {:.2}% — x {:.0}{}  [Insert or M+E menu, R restart, Q quit]",
-            if manual { "manual" } else { "auto" },
+            "{name} — attempt {} — {:.2}%{}  [Insert or M+E menu, R restart, Q quit]",
             sim.attempt,
             sim.progress(),
-            sim.players.first().map(|p| p.x).unwrap_or(0.0),
-            if next.is_empty() { String::new() } else { format!(" — next: {next}") }
+            if next.is_empty() { String::new() } else { format!(" — {next}") }
         ));
         if let Some(p) = prof.as_mut() {
             // DEMO_PROF: where a frame's wall time goes (sim, draw alongside
@@ -569,11 +412,6 @@ fn main() {
         }
     }
     music.stop();
-}
-
-/// a fresh seed per attempt, so solver macros sway differently each time
-fn seed() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64)
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 # gd-rust
 
-A Geometry Dash engine in Rust: 240 Hz physics, a CPU renderer that matches the
-real game's look, and a bot that solves levels on its own.
+Geometry Dash rewritten in Rust: 240 Hz physics and a CPU renderer that match
+the real game. Play any level by its ID.
 
 ## Install
 
@@ -22,29 +22,27 @@ Or build it: `cargo run --release --bin demo` (Linux needs `libasound2-dev`).
 ## Demo
 
 ```sh
-demo [level id] [--assets <GD folder>]   # default 149992717 (GRIEF)
+demo [level id] [--assets <GD folder>]   # default 1 (Stereo Madness)
 ```
 
-A missing level is downloaded with its song (`tools/fetch_level.py`). It plays a
-recorded xdBot macro from `macros/` if there is one, otherwise the bot's own
-solve, which is cached in `macros/<id>.auto.json`.
+A missing level is downloaded with its song (`tools/fetch_level.py`).
 
 | Key | Action |
 |---|---|
-| Insert, or M+E together | menu: type a level ID, Enter loads it, Tab switches Auto / Manual |
-| Space / Up / W / mouse | jump (Manual mode) |
+| Insert, or M+E together | menu: type a level ID, Enter loads it |
+| Space / Up / W / mouse | jump |
 | R | restart |
 | Q / Esc | quit |
 
-You can also type a level ID in the terminal to queue it: it loads in the background.
+You can also type a level ID in the terminal: it loads in the background.
 
 ## Other tools
 
 | Binary | Purpose |
 |---|---|
-| `record [out.mp4]` | offline render to MP4 with the song (`RECORD_LEVEL=<id>`) |
+| `record [out.mp4]` | render a recorded run to MP4 with the song (`RECORD_LEVEL=<id>`) |
 | `frame <tick>` | render one frame to PNG; `FRAME_SWEEP=n` times n frames |
-| `fidelity`, `truth`, `autocheck` | compare the sim against real GD recordings |
+| `fidelity`, `truth`, `calibrate` | compare the sim against real GD recordings (`macros/*.gdr2`) |
 | `rig` | hand-driven test level with every orb, pad and portal |
 
 ## Layout
@@ -52,7 +50,7 @@ You can also type a level ID in the terminal to queue it: it loads in the backgr
 ```
 src/sim/      physics, collisions, triggers
 src/render/   renderer (sprite atlas, effects, shaders)
-src/bot/      macro parsing (.gdr2) and the beam-search solver
+src/replay/   replays of real GD recordings (.gdr2), for the comparison tools
 src/level/    level string parser
 data/         object table (ids, hitboxes, sprites)
 ```

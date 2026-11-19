@@ -1,7 +1,24 @@
-pub mod auto;
+//! Replays of real Geometry Dash recordings (xdBot .gdr2 macros), used by
+//! the tools that check our physics and visuals against the real game.
+
 pub mod gdr2;
 
 use gdr2::Macro;
+
+/// A recording of level `level_id` in `dir` (*.gdr2), ones with recorded
+/// positions (xdBot frame fixes) first.
+pub fn recorded_for(dir: &std::path::Path, level_id: u32) -> Option<Macro> {
+    let mut found: Vec<Macro> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "gdr2"))
+        .filter_map(|e| gdr2::parse_gdr2(&std::fs::read(e.path()).ok()?).ok())
+        .filter(|m| m.level_id == level_id)
+        .collect();
+    found.sort_by_key(|m| m.frames.is_empty());
+    found.into_iter().next()
+}
 
 /// Input state at a given 240Hz frame, derived from a macro's press/release events.
 pub struct Playback {
@@ -67,7 +84,6 @@ mod tests {
             deaths: vec![],
             frames: vec![],
             frames_p2: vec![],
-            sway: vec![],
             inputs: vec![
                 gdr2::MacroInput { frame: 5, button: 1, player2: false, down: true },
                 gdr2::MacroInput { frame: 10, button: 1, player2: false, down: false },

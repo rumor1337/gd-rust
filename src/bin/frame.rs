@@ -1,8 +1,8 @@
 // Headless frame dump: render GRIEF at a chosen sim tick to /tmp/opencode/frame.png
 // using the player's Geometry Dash art (gdrust::assets), for visual inspection.
 // usage: frame [tick] [outdir]
-use gdrust::bot::gdr2::parse_gdr2;
-use gdrust::bot::Playback;
+use gdrust::replay::gdr2::parse_gdr2;
+use gdrust::replay::Playback;
 use gdrust::level::parse_level;
 use gdrust::render::Renderer;
 use gdrust::sim::objects::ObjectTable;
@@ -26,17 +26,12 @@ fn main() {
         &std::fs::read(format!("{manifest}/macros/Cerealmilkbowl-GRIEF-xdBot.gdr2")).unwrap(),
     )
     .unwrap();
-    // another level: its own macro, the cached solve, or a fresh solve
+    // another level: a real recording of it from macros/
     let m = if m.level_id == level_id {
         m
     } else {
-        let t = std::time::Instant::now();
-        let r = gdrust::bot::auto::macro_for(&std::path::Path::new(manifest).join("macros"), &level, &table, |p| eprint!("\rsolving {p:5.1}%"));
-        eprintln!("\nmacro in {:.1}s", t.elapsed().as_secs_f64());
-        r.unwrap_or_else(|(m, p)| {
-            eprintln!("couldn't solve past {p:.1}%");
-            m
-        })
+        gdrust::replay::recorded_for(&std::path::Path::new(manifest).join("macros"), level_id)
+            .unwrap_or_else(|| panic!("no macros/*.gdr2 recording of level {level_id}"))
     };
     let assets = gdrust::assets::find_or_ask();
     let mut r = Renderer::new(std::path::Path::new(&assets));

@@ -39,11 +39,10 @@ jobs:
         shell: bash
         run: |
           dir=gd-rust-${{ matrix.name }}
-          mkdir -p "$dir/data" "$dir/tools" "$dir/macros"
+          mkdir -p "$dir/data" "$dir/tools"
           cp target/release/${{ matrix.exe }} "$dir/"
           cp data/objects.json "$dir/data/"
           cp tools/fetch_level.py "$dir/tools/"
-          cp macros/*.gdr2 macros/*.gdr macros/*.auto.json "$dir/macros/" 2>/dev/null || true
           cp README.md "$dir/"
           if [ "$RUNNER_OS" = Windows ]; then 7z a "$dir.zip" "$dir" >/dev/null; else tar czf "$dir.tar.gz" "$dir"; fi
       - uses: actions/upload-artifact@v4

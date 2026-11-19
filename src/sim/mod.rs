@@ -71,9 +71,6 @@ pub struct Sim {
     pub triggers: TriggerEngine,
     /// solo portal hit this tick: drop player 2 after the player loop
     pending_solo: bool,
-    /// mode changes by portal this run, and the x of the latest one (the
-    /// solver drops runs that flew past a portal another run took)
-    pub mode_portals: (u32, f64),
     /// per player: wave trail, one point per tick (oldest first), so the
     /// trail does not depend on how often frames are drawn
     pub trails: Vec<std::collections::VecDeque<(f64, f64)>>,
@@ -293,7 +290,6 @@ impl Sim {
             level_start: (mode, speed_idx, mini, flip, two_p),
             triggers: TriggerEngine::new(level),
             pending_solo: false,
-            mode_portals: (0, 0.0),
             trails: Vec::new(),
             follow: false,
             probes: Probes::from_env(),
@@ -318,13 +314,6 @@ impl Sim {
             p.y = crate::physics::SPAWN_Y.max(p.band.0 + ph);
             p.on_ground = p.y - ph <= p.band.0 + 1e-9;
         }
-    }
-
-    /// Rough bytes one clone of this sim takes (see TriggerEngine::heap_bytes).
-    pub fn heap_bytes(&self) -> usize {
-        let sets = |v: &Vec<fx::HashSet<usize>>| v.iter().map(|s| s.capacity() * 9).sum::<usize>();
-        std::mem::size_of::<Sim>() + self.triggers.heap_bytes() + sets(&self.touching) + sets(&self.orbs_used)
-            + self.coins.capacity() * 9 + self.trails.iter().map(|t| t.capacity() * 16).sum::<usize>()
     }
 
     pub fn progress(&self) -> f64 {
@@ -1135,7 +1124,6 @@ impl Sim {
                 continue;
             }
             // --- portals ---
-            let mode_before = self.players[pi].mode;
             match kind {
                 ObjectKind::SpeedPortal(idx) => self.players[pi].speed_idx = idx,
                 ObjectKind::GravityPortal(flip) => self.players[pi].flip_gravity(flip),
@@ -1170,9 +1158,6 @@ impl Sim {
                     self.coins.insert(self.grid.all()[ci].src);
                 }
                 _ => {}
-            }
-            if self.players[pi].mode != mode_before {
-                self.mode_portals = (self.mode_portals.0 + 1, self.players[pi].x);
             }
         }
         self.orbs_used[pi].retain(|c| now.contains(c));

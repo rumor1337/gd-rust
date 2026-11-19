@@ -5,13 +5,13 @@
 //! sim ticks, so the video lines up with the song however slow rendering is.
 //! Usage: `record [out.mp4]` (default `grief.mp4`), RECORD_FPS (default 60).
 //! RECORD_LEVEL=<id>: another level from levels/ (song from its .json), played
-//! by its real macro if macros/ has one, else the solver's (see bot::auto).
+//! by a real recording of it from macros/ (*.gdr2).
 //!
 //! The video is written first; a second ffmpeg pass lays the song under it,
 //! cut at every song-trigger cue (the sim's `song`), so it plays as in GD.
 
-use gdrust::bot::gdr2::parse_gdr2;
-use gdrust::bot::Playback;
+use gdrust::replay::gdr2::parse_gdr2;
+use gdrust::replay::Playback;
 use gdrust::level::parse_level;
 use gdrust::render::{Renderer, FRAME_H, FRAME_W};
 use gdrust::sim::objects::ObjectTable;
@@ -32,14 +32,8 @@ fn main() {
             let meta: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(format!("{manifest}/levels/{id}.json")).expect("levels/<id>.json")).expect("meta json");
             let song = meta["song"].as_str().map(|s| format!("{manifest}/{s}")).expect("level has no song");
-            let macros = std::path::Path::new(manifest).join("macros");
-            let m = match gdrust::bot::auto::macro_for(&macros, &level, &table, |p| eprint!("\rsolving {p:.0}%   ")) {
-                Ok(m) => m,
-                Err((m, p)) => {
-                    eprintln!("\nsolver stopped at {p:.1}%: recording the partial run");
-                    m
-                }
-            };
+            let m = gdrust::replay::recorded_for(&std::path::Path::new(manifest).join("macros"), id)
+                .unwrap_or_else(|| panic!("no macros/*.gdr2 recording of level {id}"));
             (level, m, song)
         }
         None => {
@@ -65,7 +59,7 @@ fn main() {
     let mut pipe = ff.stdin.take().expect("piped stdin");
 
     let mut sim = Sim::new(&level, &table);
-    // frame fixes keep a real recording on GD's path; solver macros run pure
+    // frame fixes keep the recording on GD's path; one without them runs pure
     sim.follow = !m.frames.is_empty();
     let mut pb = Playback::new(m.clone());
     let ticks_per_frame = 240 / fps;

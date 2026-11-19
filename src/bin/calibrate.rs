@@ -4,8 +4,8 @@
 //! Oracle: macros/Cerealmilkbowl-GRIEF-xdBot.gdr2 (real GD 2.2 recording).
 //! Model: 1 macro frame = 1 sim substep (240Hz).
 
-use gdrust::bot::gdr2::parse_gdr2;
-use gdrust::bot::Playback;
+use gdrust::replay::gdr2::parse_gdr2;
+use gdrust::replay::Playback;
 use gdrust::level::parse_level;
 use gdrust::sim::objects::ObjectTable;
 use gdrust::sim::{InputState, Sim};

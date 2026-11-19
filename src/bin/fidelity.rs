@@ -5,8 +5,8 @@
 //! mode and size; the worst ticks per group are listed so they can be fixed.
 //! usage: fidelity [max examples per group]
 
-use gdrust::bot::gdr2::parse_gdr2;
-use gdrust::bot::Playback;
+use gdrust::replay::gdr2::parse_gdr2;
+use gdrust::replay::Playback;
 use gdrust::level::parse_level;
 use gdrust::sim::objects::ObjectTable;
 use gdrust::sim::{InputState, RunState, Sim};

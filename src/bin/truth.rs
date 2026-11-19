@@ -4,8 +4,8 @@
 //!
 //! usage: truth [tolerance=0.5] [context=12]
 
-use gdrust::bot::gdr2::parse_gdr2;
-use gdrust::bot::Playback;
+use gdrust::replay::gdr2::parse_gdr2;
+use gdrust::replay::Playback;
 use gdrust::level::parse_level;
 use gdrust::sim::objects::ObjectTable;
 use gdrust::sim::{InputState, RunState, Sim};

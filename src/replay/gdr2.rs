@@ -4,7 +4,7 @@
 //! LEB128 varints, extension block, death deltas, then delta-packed inputs:
 //! non-platformer packed = (frame_delta << 1) | down, platformer = (delta << 3) | (button << 1) | down.
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct MacroInput {
     pub frame: u64,
     pub button: u8,
@@ -12,7 +12,7 @@ pub struct MacroInput {
     pub down: bool,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct Macro {
     pub author: String,
     pub bot_name: String,
@@ -28,10 +28,6 @@ pub struct Macro {
     pub frames: Vec<[f32; 3]>,
     /// the same for player 2 (dual sections; meaningless while solo)
     pub frames_p2: Vec<[f32; 3]>,
-    /// solver macros: per press (in order), the tick shifts (min, max) that
-    /// still leave the run in the same state by the next input; see auto::swayed
-    #[serde(default)]
-    pub sway: Vec<(i32, i32)>,
 }
 
 /// xdBot's header extension: varint count, then per frame
@@ -222,7 +218,6 @@ pub fn parse_gdr2(data: &[u8]) -> Result<Macro, String> {
         inputs,
         frames,
         frames_p2,
-        sway: vec![],
     })
 }
 

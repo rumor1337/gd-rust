@@ -1,5 +1,5 @@
 fn main() {
-    let m = gdrust::bot::gdr2::parse_gdr2(&std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/macros/Cerealmilkbowl-GRIEF-xdBot.gdr2")).unwrap()).unwrap();
+    let m = gdrust::replay::gdr2::parse_gdr2(&std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/macros/Cerealmilkbowl-GRIEF-xdBot.gdr2")).unwrap()).unwrap();
     let p2 = m.inputs.iter().filter(|i| i.player2).count();
     let p1 = m.inputs.len() - p2;
     println!("p1 inputs: {p1}, p2 inputs: {p2}");
